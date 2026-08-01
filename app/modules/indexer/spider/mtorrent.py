@@ -1,7 +1,7 @@
 import base64
 import json
 import re
-from typing import Tuple, List, Optional
+from typing import Any, Tuple, List, Optional
 from urllib.parse import urlparse
 
 from app.core.config import settings
@@ -71,10 +71,24 @@ class MTorrentSpider:
             if indexer.get('proxy'):
                 self._proxy = settings.PROXY
             self._cookie = indexer.get('cookie')
-            self._ua = indexer.get('ua')
+            self._ua = indexer.get('ua') or settings.USER_AGENT
             self._apikey = indexer.get('apikey')
             self._token = indexer.get('token')
             self._timeout = indexer.get('timeout') or 15
+
+    @staticmethod
+    def _decode_json_response(response: Any) -> dict:
+        """
+        解析 MTorrent JSON 响应，兼容响应中偶发的非法 UTF-8 字节
+
+        :param response: requests 或 httpx 响应对象
+        :return: JSON 响应字典
+        """
+        try:
+            return response.json()
+        except UnicodeDecodeError:
+            logger.warn("MTorrent 响应包含非法 UTF-8 字节，已替换异常字符后继续解析")
+            return json.loads(response.content.decode("utf-8-sig", errors="replace"))
 
     def __get_params(self, keyword: str, mtype: MediaType = None, page: Optional[int] = 0) -> dict:
         """
@@ -181,8 +195,12 @@ class MTorrentSpider:
             timeout=self._timeout
         ).post_res(url=self._searchurl, json=params)
         if res and res.status_code == 200:
-            results = res.json().get('data', {}).get("data") or []
-            return False, self.__parse_result(results)
+            try:
+                results = self._decode_json_response(res).get('data', {}).get("data") or []
+                return False, self.__parse_result(results)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                logger.warn(f"{self._name} 搜索失败，站点返回的内容不是有效 JSON")
+                return True, []
         elif res is not None:
             logger.warn(f"{self._name} 搜索失败，错误码：{res.status_code}")
             return True, []
@@ -213,8 +231,12 @@ class MTorrentSpider:
             timeout=self._timeout
         ).post_res(url=self._searchurl, json=params)
         if res and res.status_code == 200:
-            results = res.json().get('data', {}).get("data") or []
-            return False, self.__parse_result(results)
+            try:
+                results = self._decode_json_response(res).get('data', {}).get("data") or []
+                return False, self.__parse_result(results)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                logger.warn(f"{self._name} 搜索失败，站点返回的内容不是有效 JSON")
+                return True, []
         elif res is not None:
             logger.warn(f"{self._name} 搜索失败，错误码：{res.status_code}")
             return True, []
