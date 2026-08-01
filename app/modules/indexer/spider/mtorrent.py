@@ -91,11 +91,27 @@ class MTorrentSpider:
             if indexer.get('proxy'):
                 self._proxy = get_runtime_setting('PROXY')
             self._cookie = indexer.get('cookie')
-            self._ua = indexer.get('ua')
+            self._ua = indexer.get('ua') or get_runtime_setting('USER_AGENT')
             self._apikey = indexer.get('apikey')
             self._token = indexer.get('token')
             self._timeout = indexer.get('timeout') or 15
             self.error_detail = None
+
+    @staticmethod
+    def _decode_json_response(response: Any) -> dict[str, Any]:
+        """
+        解析站点 JSON，替换响应中偶发的非法 UTF-8 字节。
+
+        :param response: 同步或异步 HTTP 响应
+        :return: 解码后的 JSON 对象
+        :raises json.JSONDecodeError: 替换异常字节后仍不是有效 JSON
+        """
+        try:
+            payload: dict[str, Any] = response.json()
+        except UnicodeDecodeError:
+            logger.warning("MTorrent 响应包含非法 UTF-8 字节，已替换异常字符后继续解析")
+            payload = json.loads(response.content.decode("utf-8-sig", errors="replace"))
+        return payload
 
     @staticmethod
     def __resolve_api_domain(indexer: dict[str, Any]) -> str:
@@ -221,7 +237,11 @@ class MTorrentSpider:
         统一判定搜索响应状态并投影 M-Team 种子结果。
         """
         if res and res.status_code == 200:
-            payload = res.json()
+            try:
+                payload = self._decode_json_response(res)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                logger.warning(f"{self._name} 搜索失败，站点返回的内容不是有效 JSON")
+                return True, []
             if str(payload.get("code")) != "0" or not isinstance(payload.get("data"), dict):
                 logger.warning(f"{self._name} 搜索失败，站点返回业务错误")
                 return True, []

@@ -9,10 +9,12 @@
 import asyncio
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.modules.indexer.spider import mtorrent as mtorrent_module
 from app.modules.indexer.spider.mtorrent import MTorrentSpider
+from app.runtime.settings import get_runtime_setting
 from app.schemas import MediaType
 
 
@@ -218,3 +220,36 @@ def test_restored_candidate_rebuilds_download_link_from_detail_page_id(mteam_spi
     torrent = IndexerModule.restore_search_torrent(site=site, record=record)
     encoded = torrent.enclosure[1:torrent.enclosure.index("]")]
     assert json.loads(base64.b64decode(encoded))["params"] == {"id": "12345"}
+
+
+
+def test_decode_json_response_replaces_invalid_utf8_bytes():
+    """
+    非法 UTF-8 字节不应导致整次站点搜索失败。
+    """
+    response = httpx.Response(
+        status_code=200,
+        content=b'\xef\xbb\xbf{"data":{"data":[{"name":"bad \xbc title"}]}}',
+    )
+    payload = MTorrentSpider._decode_json_response(response)
+    assert payload["data"]["data"][0]["name"] == "bad \ufffd title"
+
+
+def test_decode_json_response_keeps_valid_utf8_content():
+    """
+    合法 JSON 保留原始中文内容。
+    """
+    response = httpx.Response(
+        status_code=200,
+        content='{"data":{"data":[{"name":"测试标题"}]}}'.encode("utf-8"),
+    )
+    payload = MTorrentSpider._decode_json_response(response)
+    assert payload["data"]["data"][0]["name"] == "测试标题"
+
+
+def test_empty_user_agent_uses_global_default():
+    """
+    站点未配置 UA 时使用宿主默认值。
+    """
+    spider = MTorrentSpider({**_build_indexer(), "ua": ""})
+    assert spider._ua == get_runtime_setting("USER_AGENT")
