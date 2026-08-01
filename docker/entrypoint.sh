@@ -127,6 +127,7 @@ function load_config_from_app_env() {
         ["NGINX_PORT"]="3000"
         ["PORT"]="3001"
         ["NGINX_CLIENT_MAX_BODY_SIZE"]="50m"
+        ["NGINX_SUBDIRECTORY"]=""
     )
 
     INFO "开始加载配置 (配置文件: ${env_file})..."
@@ -222,9 +223,43 @@ function load_config_from_app_env() {
     INFO "配置加载流程执行完毕。"
 }
 
+function normalize_nginx_subdirectory() {
+    local subdirectory="${1:-}"
+
+    if [ -z "${subdirectory}" ] || [ "${subdirectory}" = "/" ]; then
+        printf ''
+        return 0
+    fi
+
+    subdirectory="/${subdirectory#/}"
+    subdirectory="${subdirectory%/}"
+    if [[ ! "${subdirectory}" =~ ^/[A-Za-z0-9._~-]+(/[A-Za-z0-9._~-]+)*$ ]]; then
+        ERROR "NGINX_SUBDIRECTORY=${1:-} 无效，仅支持由字母、数字、点、下划线、波浪号、连字符和斜杠组成的路径。" >&2
+        return 1
+    fi
+
+    printf '%s' "${subdirectory}"
+}
+
+function normalize_frontend_public_paths() {
+    local index_file="${1:-/public/index.html}"
+
+    [ -f "${index_file}" ] || return 0
+    sed -i -E 's#(href|src)="/#\1="./#g' "${index_file}"
+}
+
 # 生成 nginx 配置，仅为 envsubst 单次调用传入模板变量。
 function render_nginx_config() {
     local https_server_conf
+    local subdirectory_redirect_conf
+
+    NGINX_SUBDIRECTORY="$(normalize_nginx_subdirectory "${NGINX_SUBDIRECTORY:-}")" || return 1
+    if [ -n "${NGINX_SUBDIRECTORY}" ]; then
+        subdirectory_redirect_conf="location = ${NGINX_SUBDIRECTORY} { return 308 ${NGINX_SUBDIRECTORY}/; }"
+    else
+        subdirectory_redirect_conf="# 根路径部署不需要子目录重定向"
+    fi
+
     if [ "${ENABLE_SSL}" = "true" ]; then
         https_server_conf=$(cat <<EOF
     server {
@@ -254,6 +289,10 @@ EOF
         else
             https_server_conf="# HTTPS未启用"
         fi
+
+    NGINX_SUBDIRECTORY="${NGINX_SUBDIRECTORY}" \
+        SUBDIRECTORY_REDIRECT_CONF="${subdirectory_redirect_conf}" \
+        envsubst '${NGINX_SUBDIRECTORY}${SUBDIRECTORY_REDIRECT_CONF}' < /etc/nginx/common.template.conf > /etc/nginx/common.conf
 
     NGINX_PORT="${NGINX_PORT}" \
         PORT="${PORT}" \
@@ -469,6 +508,7 @@ source /usr/local/bin/mp_update.sh
 if [ "${ONE_SHOT_UPDATE_APPLIED}" = "true" ]; then
     MOVIEPILOT_AUTO_UPDATE="${MOVIEPILOT_AUTO_UPDATE_ORIGINAL}"
 fi
+normalize_frontend_public_paths
 cd /app || exit
 
 # 更改 moviepilot userid 和 groupid

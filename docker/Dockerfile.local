@@ -1,0 +1,21 @@
+FROM jxxghp/moviepilot-v2:latest
+
+ARG VCS_REF=local
+
+USER root
+WORKDIR /app
+
+# The base image is built from the same Git revision. Overlay the local patch set
+# and remove the proprietary site artifacts replaced by the Python implementation.
+COPY . /app
+RUN rm -f \
+        /app/app/helper/sites.cpython-*.so \
+        /app/app/helper/sites.cp*.pyd \
+        /app/app/helper/user.sites.v2.bin \
+    && cp -f /app/docker/nginx.common.conf /etc/nginx/common.template.conf \
+    && cp -f /app/docker/nginx.template.conf /etc/nginx/nginx.template.conf \
+    && cp -f /app/docker/update.sh /usr/local/bin/mp_update.sh \
+    && cp -f /app/docker/entrypoint.sh /entrypoint.sh \
+    && chmod +x /entrypoint.sh /usr/local/bin/mp_update.sh
+
+LABEL org.opencontainers.image.revision="${VCS_REF}"

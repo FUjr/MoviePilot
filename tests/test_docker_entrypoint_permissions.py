@@ -47,8 +47,8 @@ def _run_permission_case(tmp_path: Path, body: str, env: dict[str, str] | None =
     (home_dir / ".cloakbrowser").mkdir(parents=True)
     (home_dir / "runtime").mkdir()
     (app_dir / "app" / "plugins" / "plugin.py").write_text("# plugin\n", encoding="utf-8")
-    (helper_dir / "user.sites.v2.bin").write_text("resources\n", encoding="utf-8")
-    (helper_dir / "sites.cpython-312-x86_64-linux-gnu.so").write_text("plugin\n", encoding="utf-8")
+    (helper_dir / "user.sites.v2.json").write_text('{"indexers": {}}\n', encoding="utf-8")
+    (helper_dir / "sites.py").write_text("# sites\n", encoding="utf-8")
     (public_dir / "index.html").write_text("<!doctype html>\n", encoding="utf-8")
     (home_dir / ".cloakbrowser" / "chrome").write_text("browser cache\n", encoding="utf-8")
     (home_dir / "runtime" / "state").write_text("state\n", encoding="utf-8")
@@ -261,3 +261,49 @@ def test_backend_ready_timeout_accepts_leading_zero_decimal(tmp_path: Path) -> N
 
     assert "MOVIEPILOT_BACKEND_READY_TIMEOUT=08 无效" not in output
     assert "MoviePilot Web 已可访问" in output
+
+
+def test_nginx_subdirectory_normalizes_supported_values(tmp_path: Path) -> None:
+    output = _run_entrypoint_case(
+        tmp_path,
+        """
+        printf '<%s>\n' "$(normalize_nginx_subdirectory '')"
+        printf '<%s>\n' "$(normalize_nginx_subdirectory '/')"
+        printf '<%s>\n' "$(normalize_nginx_subdirectory 'moviepilot')"
+        printf '<%s>\n' "$(normalize_nginx_subdirectory '/media/moviepilot/')"
+        """,
+    )
+
+    assert output.splitlines() == ["<>", "<>", "</moviepilot>", "</media/moviepilot>"]
+
+
+def test_nginx_subdirectory_rejects_unsafe_values(tmp_path: Path) -> None:
+    output = _run_entrypoint_case(
+        tmp_path,
+        """
+        ERROR() { printf '[ERROR] %s\n' "$1"; }
+        normalize_nginx_subdirectory '/movie pilot' 2>&1 || true
+        normalize_nginx_subdirectory '/moviepilot?$request_uri' 2>&1 || true
+        """,
+    )
+
+    assert output.count("NGINX_SUBDIRECTORY=") == 2
+    assert "仅支持由字母、数字" in output
+
+
+def test_frontend_public_paths_are_made_relative(tmp_path: Path) -> None:
+    index_file = tmp_path / "index.html"
+    index_file.write_text(
+        '<link href="/favicon.ico"><script src="/assets/app.js"></script>',
+        encoding="utf-8",
+    )
+
+    _run_entrypoint_case(
+        tmp_path,
+        'normalize_frontend_public_paths "${INDEX_FILE}"',
+        env={"INDEX_FILE": str(index_file)},
+    )
+
+    assert index_file.read_text(encoding="utf-8") == (
+        '<link href="./favicon.ico"><script src="./assets/app.js"></script>'
+    )

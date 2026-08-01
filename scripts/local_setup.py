@@ -336,7 +336,7 @@ NOTIFICATION_SWITCH_TYPES = [
     "其它",
 ]
 UNINSTALL_CONFIRM_TEXT = "UNINSTALL"
-RESOURCE_FILE_PATTERNS = ("sites*", "user.sites*.bin")
+RESOURCE_FILE_PATTERNS = ("sites*", "user.sites*.bin", "user.sites*.json")
 AUTOSTART_ENV_KEY = "MOVIEPILOT_AUTO_START"
 AUTOSTART_RUNTIME_DIR = RUNTIME_DIR / "startup"
 AUTOSTART_UNIX_LAUNCHER = AUTOSTART_RUNTIME_DIR / "moviepilot-start.sh"
@@ -998,9 +998,9 @@ def install_frontend(frontend_version: str, node_version: str) -> dict[str, str]
 
 
 def local_resource_status() -> bool:
-    return (HELPER_DIR / "user.sites.v2.bin").exists() and bool(
-        list(HELPER_DIR.glob("sites*"))
-    )
+    return (HELPER_DIR / "user.sites.v2.json").exists() and (
+        HELPER_DIR / "sites.py"
+    ).exists()
 
 
 def copy_resource_files(source_dir: Path) -> list[str]:
@@ -1141,12 +1141,17 @@ def _resolve_local_resource_dir(
 def install_resources(
     resources_repo: Optional[Path], resource_dir: Optional[Path]
 ) -> list[str]:
+    # 站点资源已改为本地开源实现（app/helper/sites.py + user.sites.v2.json），
+    # 随仓库分发，不再从 MoviePilot-Resources 下载闭源 .so / 加密 .bin。
     ensure_local_dirs()
-    source_dir = _resolve_local_resource_dir(resources_repo, resource_dir)
-    if source_dir is None:
-        source_dir = _download_resources_dir()
-    copied = copy_resource_files(source_dir)
-    print_step(f"资源初始化完成，共处理 {len(copied)} 个文件")
+    copied: list[str] = []
+    for name in ("sites.py", "user.sites.v2.json"):
+        target = HELPER_DIR / name
+        if target.exists():
+            copied.append(name)
+    if not copied:
+        raise RuntimeError("未找到本地站点资源文件（app/helper/sites.py、user.sites.v2.json）")
+    print_step(f"资源初始化完成，共处理 {len(copied)} 个文件（本地开源资源）")
     return copied
 
 

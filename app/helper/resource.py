@@ -44,18 +44,9 @@ class ResourceHelper:
 
     @staticmethod
     def _get_needed_files() -> list[str]:
-        python_version = ResourceHelper._get_python_version_tag()
-        python_ver = python_version.replace("cp", "")
-        system = platform.system().lower()
-        machine = ResourceHelper._get_machine_tag()
-        files = ["user.sites.v2.bin"]
-        if system == "linux":
-            files.append(f"sites.cpython-{python_ver}-{machine}-linux-gnu.so")
-        elif system == "darwin":
-            files.append(f"sites.cpython-{python_ver}-darwin.so")
-        elif system == "windows":
-            files.append(f"sites.cp{python_ver}-win_amd64.pyd")
-        return files
+        # 站点资源已由本地还原的开源实现（app/helper/sites.py + user.sites.v2.json）
+        # 提供，不再从 MoviePilot-Resources 拉取闭源的编译 .so / 加密 .bin。
+        return []
 
     def check(self):
         """

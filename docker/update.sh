@@ -153,12 +153,12 @@ function install_backend_and_download_resources() {
     mkdir -p /plugins
     cp -a /app/app/plugins/* /plugins/
     rm -f /plugins/__init__.py
-    # 备份站点资源
+    # 备份站点资源（本地开源实现）
     INFO "→ 正在备份站点资源目录..."
     rm -rf /resources_bakcup
     mkdir /resources_bakcup
-    cp -a /app/app/helper/user.sites.v2.bin /resources_bakcup
-    cp -a /app/app/helper/sites.cp* /resources_bakcup
+    cp -a /app/app/helper/sites.py /resources_bakcup 2>/dev/null || true
+    cp -a /app/app/helper/user.sites.v2.json /resources_bakcup 2>/dev/null || true
     # 清空程序目录
     rm -rf /app
     mkdir -p /app
@@ -171,27 +171,11 @@ function install_backend_and_download_resources() {
     INFO "程序部分更新成功，前端版本：${frontend_version}，后端版本：${1}"
     # 恢复插件目录
     cp -a /plugins/* /app/app/plugins/
-    # 更新站点资源
-    INFO "→ 开始更新站点资源..."
-    python_version=$(python3 -c 'import sys; print(f"cpython-{sys.version_info.major}{sys.version_info.minor}")')
-    arch=$(uname -m)
-    if [ "$arch" = "aarch64" ]; then
-        arch_suffix="aarch64-linux-gnu"
-    else
-        arch_suffix="x86_64-linux-gnu"
-    fi
-    INFO "当前 Python 版本：${python_version}，架构：${arch}"
-    # 下载 user.sites.v2.bin
-    if ! curl ${CURL_OPTIONS} "${GITHUB_PROXY}https://raw.githubusercontent.com/jxxghp/MoviePilot-Resources/main/resources.v2/user.sites.v2.bin" -o /app/app/helper/user.sites.v2.bin; then
-        cp -a /resources_bakcup/user.sites.v2.bin /app/app/helper/
-        WARN "user.sites.v2.bin 下载失败，继续使用旧的资源来启动..."
-    fi
-    # 下载对应平台的 sites 文件
-    sites_file="sites.${python_version}-${arch_suffix}.so"
-    if ! curl ${CURL_OPTIONS} "${GITHUB_PROXY}https://raw.githubusercontent.com/jxxghp/MoviePilot-Resources/main/resources.v2/${sites_file}" -o "/app/app/helper/${sites_file}"; then
-        WARN "${sites_file} 下载失败，继续使用旧的资源来启动..."
-    fi
-    INFO "站点资源更新成功"
+    # 恢复站点资源（本地开源实现，不从 MoviePilot-Resources 拉取闭源文件）
+    INFO "→ 正在恢复站点资源..."
+    cp -a /resources_bakcup/sites.py /app/app/helper/ 2>/dev/null || true
+    cp -a /resources_bakcup/user.sites.v2.json /app/app/helper/ 2>/dev/null || true
+    INFO "站点资源更新完成"
     # 清理临时目录
     rm -rf "${TMP_PATH}"
     return 0

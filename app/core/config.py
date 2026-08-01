@@ -247,7 +247,9 @@ class ConfigModel(BaseModel):
     # 重启自动升级
     MOVIEPILOT_AUTO_UPDATE: str = "release"
     # 自动检查和更新站点资源包（站点索引、认证等）
-    AUTO_UPDATE_RESOURCE: bool = True
+    # 站点资源已改为本地开源实现（app/helper/sites.py + user.sites.v2.json），
+    # 不自动拉取闭源资源包。
+    AUTO_UPDATE_RESOURCE: bool = False
 
     # ==================== 媒体文件格式配置 ====================
     # 支持的视频文件后缀格式
