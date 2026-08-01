@@ -28,6 +28,7 @@
 
 推荐优先使用 Docker 部署，常用镜像包括 `jxxghp/moviepilot-v2` 和 `jxxghp/moviepilot`。Compose 示例、环境变量、目录映射和升级方式以官方 Wiki 为准：
 
+- 本仓库镜像：`ghcr.io/fujr/moviepilot:latest`（支持 `linux/amd64` 和 `linux/arm64`）
 - 官方 Wiki：https://wiki.movie-pilot.org
 - PostgreSQL 部署说明：[docs/postgresql-setup.md](docs/postgresql-setup.md)
 - 反向代理子目录部署：[docs/reverse-proxy.md](docs/reverse-proxy.md)
