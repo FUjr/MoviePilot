@@ -401,33 +401,13 @@ function stage_runtime_payload() {
 
     resource_source_dir="$(existing_resource_dir)"
     mkdir -p "${stage_resource_dir}" || return 1
-    if [ -f "${resource_source_dir}/user.sites.v3.bin" ] \
-        && ! cp -a "${resource_source_dir}/user.sites.v3.bin" "${stage_resource_dir}/"; then
-        return 1
-    fi
-    for resource_file in "${resource_source_dir}"/sites.cp*; do
-        [ -f "${resource_file}" ] || continue
-        cp -a "${resource_file}" "${stage_resource_dir}/" || return 1
+    for resource_file in sites.py user.sites.v2.json; do
+        if [ ! -s "${stage_resource_dir}/${resource_file}" ]; then
+            cp -a "${resource_source_dir}/${resource_file}" "${stage_resource_dir}/" || return 1
+        fi
     done
-
-    python_version="$("${VENV_PATH}/bin/python3" -c 'import sys, sysconfig; print(f"cpython-{sys.version_info.major}{sys.version_info.minor}{"t" if sysconfig.get_config_var("Py_GIL_DISABLED") == 1 else ""}")')" || return 1
-    arch="$(uname -m)"
-    if [ "${arch}" = "aarch64" ]; then
-        arch_suffix="aarch64-linux-gnu"
-    else
-        arch_suffix="x86_64-linux-gnu"
-    fi
-    sites_file="sites.${python_version}-${arch_suffix}.so"
-    download_staged_resource \
-        "$(github_download_url "https://raw.githubusercontent.com/jxxghp/MoviePilot-Resources/main/resources.v3/user.sites.v3.bin")" \
-        "${stage_resource_dir}/user.sites.v3.bin" \
-        "${resource_source_dir}/user.sites.v3.bin" \
-        "user.sites.v3.bin" || return 1
-    download_staged_resource \
-        "$(github_download_url "https://raw.githubusercontent.com/jxxghp/MoviePilot-Resources/main/resources.v3/${sites_file}")" \
-        "${stage_resource_dir}/${sites_file}" \
-        "${resource_source_dir}/${sites_file}" \
-        "${sites_file}" || return 1
+    INFO "本地站点资源准备完成"
+    return 0
 }
 
 function swap_staged_payload() {

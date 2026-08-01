@@ -127,20 +127,9 @@ class ResourceHelper:
     @classmethod
     def _get_needed_files(cls) -> list[str]:
         """
-        返回 V3 资源在当前平台需要下载的文件名。
+        本地站点实现随源码分发，不下载二进制资源。
         """
-        python_version = cls._get_python_version_tag()
-        python_ver = python_version.replace("cp", "")
-        system = platform.system().lower()
-        machine = cls._get_machine_tag()
-        files = [f"user.sites.{cls._version_flag}.bin"]
-        if system == "linux":
-            files.append(f"sites.cpython-{python_ver}-{machine}-linux-gnu.so")
-        elif system == "darwin":
-            files.append(f"sites.cpython-{python_ver}-darwin.so")
-        elif system == "windows":
-            files.append(f"sites.cp{python_ver}-win_amd64.pyd")
-        return files
+        return []
 
     def _load_resource_info(self) -> Optional[Response]:
         """

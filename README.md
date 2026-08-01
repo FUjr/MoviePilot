@@ -32,6 +32,7 @@
 - 官方 Wiki：https://wiki.movie-pilot.org
 - V2 到 V3 版本变化总览：[docs/v2-to-v3-overview.md](docs/v2-to-v3-overview.md)
 - PostgreSQL 部署说明：[docs/postgresql-setup.md](docs/postgresql-setup.md)
+- 反向代理子目录部署：[docs/reverse-proxy.md](docs/reverse-proxy.md)
 
 也可以使用本地 CLI 以源码模式安装和管理 MoviePilot：
 

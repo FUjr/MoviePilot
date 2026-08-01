@@ -69,6 +69,8 @@ def _run_permission_case(tmp_path: Path, body: str, env: dict[str, str] | None =
     (app_dir / "app" / "plugins" / "plugin.py").write_text("# plugin\n", encoding="utf-8")
     (resource_dir / "user.sites.v3.bin").write_text("resources\n", encoding="utf-8")
     (resource_dir / "sites.cpython-312-x86_64-linux-gnu.so").write_text("plugin\n", encoding="utf-8")
+    (resource_dir / "sites.py").write_text("# 本地站点实现\n", encoding="utf-8")
+    (resource_dir / "user.sites.v2.json").write_text('{"indexers": {}}\n', encoding="utf-8")
     (public_dir / "index.html").write_text("<!doctype html>\n", encoding="utf-8")
     (home_dir / ".cloakbrowser" / "chrome").write_text("browser cache\n", encoding="utf-8")
     (home_dir / "runtime" / "state").write_text("state\n", encoding="utf-8")
@@ -688,3 +690,57 @@ def test_supervisor_manages_backend_and_nginx() -> None:
     assert supervisor.count("password=%(ENV_MOVIEPILOT_SUPERVISOR_PASSWORD)s") == 2
     assert "openssl rand -hex 32" in entrypoint
     assert supervisor.count("autorestart=true") == 2
+
+def test_nginx_subdirectory_normalizes_supported_values(tmp_path: Path) -> None:
+    """
+    子路径规范化应兼容根路径和多层目录。
+    """
+    output = _run_entrypoint_case(
+        tmp_path,
+        """
+        printf '<%s>\n' "$(normalize_nginx_subdirectory '')"
+        printf '<%s>\n' "$(normalize_nginx_subdirectory '/')"
+        printf '<%s>\n' "$(normalize_nginx_subdirectory 'moviepilot')"
+        printf '<%s>\n' "$(normalize_nginx_subdirectory '/media/moviepilot/')"
+        """,
+    )
+
+    assert output.splitlines() == ["<>", "<>", "</moviepilot>", "</media/moviepilot>"]
+
+
+def test_nginx_subdirectory_rejects_unsafe_values(tmp_path: Path) -> None:
+    """
+    子路径不得包含空格或 Nginx 变量。
+    """
+    output = _run_entrypoint_case(
+        tmp_path,
+        """
+        ERROR() { printf '[ERROR] %s\n' "$1"; }
+        normalize_nginx_subdirectory '/movie pilot' 2>&1 || true
+        normalize_nginx_subdirectory '/moviepilot?$request_uri' 2>&1 || true
+        """,
+    )
+
+    assert output.count("NGINX_SUBDIRECTORY=") == 2
+    assert "仅支持由字母、数字" in output
+
+
+def test_frontend_public_paths_are_made_relative(tmp_path: Path) -> None:
+    """
+    前端静态入口应使用相对路径以支持子目录部署。
+    """
+    index_file = tmp_path / "index.html"
+    index_file.write_text(
+        '<link href="/favicon.ico"><script src="/assets/app.js"></script>',
+        encoding="utf-8",
+    )
+
+    _run_entrypoint_case(
+        tmp_path,
+        'normalize_frontend_public_paths "${INDEX_FILE}"',
+        env={"INDEX_FILE": str(index_file)},
+    )
+
+    assert index_file.read_text(encoding="utf-8") == (
+        '<link href="./favicon.ico"><script src="./assets/app.js"></script>'
+    )

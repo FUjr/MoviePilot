@@ -356,7 +356,7 @@ NOTIFICATION_SWITCH_TYPES = [
 ]
 # 卸载第二次确认必须逐字输入此标记，普通回车不能确认删除。
 UNINSTALL_CONFIRM_TEXT = "UNINSTALL"
-RESOURCE_FILE_PATTERNS = ("sites*", "user.sites*.bin")
+RESOURCE_FILE_PATTERNS = ("sites*", "user.sites*.bin", "user.sites*.json")
 AUTOSTART_ENV_KEY = "MOVIEPILOT_AUTO_START"
 AUTOSTART_RUNTIME_DIR = RUNTIME_DIR / "startup"
 AUTOSTART_UNIX_LAUNCHER = AUTOSTART_RUNTIME_DIR / "moviepilot-start.sh"
@@ -1202,15 +1202,9 @@ def _publish_frontend_installation(staged: Path) -> None:
 
 def local_resource_status() -> bool:
     """
-    检查当前平台和 Python 版本所需的全部站点资源文件是否存在。
+    检查随源码分发的站点实现与明文配置是否完整。
     """
-    platform_tag, machine = _get_platform_tag()
-    required_files = _get_runtime_resource_filenames(
-        platform_tag,
-        machine,
-        _get_python_version_tag(),
-    )
-    return all((SITE_RESOURCE_DIR / filename).is_file() for filename in required_files)
+    return all((SITE_RESOURCE_DIR / name).is_file() for name in ("sites.py", "user.sites.v2.json"))
 
 
 def copy_resource_files(source_dir: Path) -> list[str]:
@@ -1463,18 +1457,18 @@ def install_resources(
     resources_repo: Optional[Path], resource_dir: Optional[Path]
 ) -> list[str]:
     """
-    优先从指定本地目录安装资源，未指定时下载远程资源包。
+    验证源码自带的站点资源，不下载编译扩展。
 
-    :param resources_repo: 本地资源仓库，可从约定子目录定位 v3 资源
-    :param resource_dir: 直接指定资源目录，优先于 resources_repo
-    :return: 同步至站点资源目录的文件名列表
+    :param resources_repo: 保留旧 CLI 参数兼容性
+    :param resource_dir: 保留旧 CLI 参数兼容性
+    :return: 当前站点资源文件名
+    :raises RuntimeError: 源码资源缺失
     """
     ensure_local_dirs()
-    source_dir = _resolve_local_resource_dir(resources_repo, resource_dir)
-    if source_dir is None:
-        source_dir = _download_resources_dir()
-    copied = copy_resource_files(source_dir)
-    print_step(f"资源初始化完成，共处理 {len(copied)} 个文件")
+    if not local_resource_status():
+        raise RuntimeError("未找到本地站点资源文件")
+    copied = ["sites.py", "user.sites.v2.json"]
+    print_step(f"资源初始化完成，共处理 {len(copied)} 个文件（本地开源资源）")
     return copied
 
 

@@ -422,7 +422,7 @@ class ConfigModel(BaseModel):
     MOVIEPILOT_UPDATE_DEV: Annotated[
         bool, SettingPolicy(serialize=_serialize_bool)
     ] = Field(default=False, description='Docker 启动时跟踪开发分支；本地 CLI 仅在手动 update 时默认使用 DEV 模式。')
-    AUTO_UPDATE_RESOURCE: bool = Field(default=True, description='后台检查站点资源包，确认后由启动器在进程拉起前应用')
+    AUTO_UPDATE_RESOURCE: bool = Field(default=False, description='后台检查站点资源包，确认后由启动器在进程拉起前应用')
 
     # 媒体文件格式配置
     RMT_MEDIAEXT: list[str] = Field(

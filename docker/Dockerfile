@@ -290,26 +290,7 @@ RUN set -eu; \
 FROM prepare_payload AS prepare_resources
 
 ARG TARGETARCH
-ARG MOVIEPILOT_RESOURCES_REF="main"
-ARG MOVIEPILOT_PYTHON_VARIANT="standard"
-
-RUN set -eu; \
-    test -n "${MOVIEPILOT_RESOURCES_REF}"; \
-    case "${MOVIEPILOT_PYTHON_VARIANT}" in \
-        standard) python_ver="$(python3 -c 'import sys; print(f"cpython-{sys.version_info.major}{sys.version_info.minor}")')" ;; \
-        free-threaded) python_ver="cpython-314t" ;; \
-        *) printf 'Unsupported Python variant: %s\n' "${MOVIEPILOT_PYTHON_VARIANT}" >&2; exit 1 ;; \
-    esac; \
-    target_arch="${TARGETARCH:-$(uname -m)}"; \
-    case "${target_arch}" in \
-        arm64|aarch64) suffix="aarch64-linux-gnu" ;; \
-        amd64|x86_64) suffix="x86_64-linux-gnu" ;; \
-        *) printf 'Unsupported architecture: %s\n' "${target_arch}" >&2; exit 1 ;; \
-    esac; \
-    mkdir -p /resources; \
-    curl -fsSL "https://raw.githubusercontent.com/jxxghp/MoviePilot-Resources/${MOVIEPILOT_RESOURCES_REF}/resources.v3/user.sites.v3.bin" -o /resources/user.sites.v3.bin; \
-    curl -fsSL "https://raw.githubusercontent.com/jxxghp/MoviePilot-Resources/${MOVIEPILOT_RESOURCES_REF}/resources.v3/sites.${python_ver}-${suffix}.so" -o "/resources/sites.${python_ver}-${suffix}.so"
-
+COPY app/application/site/sites.py app/application/site/user.sites.v2.json /resources/
 
 # 准备容器控制面
 FROM prepare_payload AS prepare_control
@@ -324,7 +305,7 @@ RUN mkdir -p \
     && find . -maxdepth 1 -type f -name '*.sh' ! -name 'launcher.sh' \
     -exec cp -f -t /bundle/rootfs/usr/local/lib/moviepilot/control {} + \
     && cp -f launcher.sh /bundle/rootfs/entrypoint.sh \
-    && cp -f nginx.common.conf /bundle/rootfs/etc/nginx/common.conf \
+    && cp -f nginx.common.conf /bundle/rootfs/etc/nginx/common.template.conf \
     && cp -f nginx.template.conf /bundle/rootfs/etc/nginx/nginx.template.conf \
     && mkdir -p /bundle/rootfs/etc/supervisor \
     && cp -f supervisord.conf /bundle/rootfs/etc/supervisor/supervisord.conf \
