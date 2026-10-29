@@ -17,7 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/jxxghp/MoviePilot/v3/scripts/bootst
 - 编译并验证 Agent 中文全文索引扩展；缺少编译器或 SQLite 扩展能力时明确告警并保留检索回退
 - 按当前仓库 `version.py` 中的 `FRONTEND_VERSION` 下载对应前端 release 的 `dist.zip`
 - 下载 `MoviePilot-Resources` 主分支资源
-- 将 `resources.v3/*` 同步到后端 `app/application/site/`
+- 校验 `app/application/site/` 中随源码分发的 Python 实现和 V3 明文站点数据
 - 下载本地 Node 运行时并安装前端运行依赖
 - 执行初始化向导
 - 创建全局 `moviepilot` 命令
@@ -225,16 +225,16 @@ moviepilot install frontend --config-dir /path/to/moviepilot-config
 
 ```shell
 moviepilot install resources
-moviepilot install resources --resources-repo /path/to/MoviePilot-Resources
-moviepilot install resources --resource-dir /path/to/resources.v3
 moviepilot install resources --config-dir /path/to/moviepilot-config
 ```
 
 说明：
 
-- 默认直接从 GitHub 下载 `MoviePilot-Resources` 主分支压缩包
-- 会将 `resources.v3/*` 整体复制到 `app/application/site/`
-- 这一步和 Docker 构建流程保持一致
+- 校验源码自带的 `sites.py` 与 `user.sites.v3.json`，不会下载原生扩展或加密数据包
+- 清除同目录的旧 `sites.*.so/.pyd/.dylib` 与 `user.sites*.bin`，避免同名扩展优先于 Python 源码被导入
+- 旧参数 `--resources-repo` 和 `--resource-dir` 仍可解析，但不用于安装二进制资源
+- 站点规则随本仓库代码更新；`AUTO_UPDATE_RESOURCE` 默认关闭，源码模式下不会检查官方二进制资源包
+- 卸载保留 Python 源码、类型声明和 JSON，仅清理旧二进制资源
 
 ## 初始化命令
 
@@ -439,8 +439,9 @@ moviepilot version
 - `start` 会先启动后端，再启动前端；普通 `start` / `restart` 不检查、不下载、不安装更新，DEV 模式也不例外
 - 本地 CLI 会优先使用项目根目录 `venv/bin/moviepilot-python`；该入口不存在时回退到同一目录的 `venv/bin/python`，手工启动、更新和开机自启保持一致
 - `start --safe` 会以安全模式启动后端，本次启动跳过插件、调度器、监控、命令和工作流等后台扩展能力，不修改用户配置
-- `MOVIEPILOT_AUTO_UPDATE` 为布尔开关，默认 `false`；只有 `true` 启用后台 Release 检查和版本提醒，保存后定时服务热更新。`AUTO_UPDATE_RESOURCE` 独立控制站点资源检查和提醒；任一开关开启即启用检测服务，且只检查对应目标，两者均关闭才移除服务。`MOVIEPILOT_UPDATE_DEV` 为独立布尔开关，默认 `false`；设为 `true` 时手动 `moviepilot update` 默认使用 DEV 更新模式。旧 `dev/release` 值统一转换为 `MOVIEPILOT_AUTO_UPDATE=true`；旧 `dev` 在未显式配置新开关时迁移为 `MOVIEPILOT_UPDATE_DEV=true`
+- `MOVIEPILOT_AUTO_UPDATE` 为布尔开关，默认 `false`；只有 `true` 启用后台 Release 检查和版本提醒，保存后定时服务热更新。本分支源码模式下 `AUTO_UPDATE_RESOURCE` 默认关闭，启用时也跳过官方二进制资源包；旧二进制模式下此开关独立控制站点资源检查和提醒；任一开关开启即启用检测服务，且只检查对应目标，两者均关闭才移除服务。`MOVIEPILOT_UPDATE_DEV` 为独立布尔开关，默认 `false`；设为 `true` 时手动 `moviepilot update` 默认使用 DEV 更新模式。旧 `dev/release` 值统一转换为 `MOVIEPILOT_AUTO_UPDATE=true`；旧 `dev` 在未显式配置新开关时迁移为 `MOVIEPILOT_UPDATE_DEV=true`
 - Release 更新由后台每 6 小时检查 GitHub Release；管理员确认后先静默下载安装包并显示进度，下载完成后再次确认重启，通过专门的内部更新入口安装已下载且通过 SHA-256 校验的包后再启动服务
+- 本分支源码模式会拒绝缺少本地站点模块的官方后端包和历史二进制资源包；后端及站点数据通过 Git 或本分支镜像更新，详见 [站点模块说明](site-resources.md)
 - Web 更新提示沿用“升级 / 立即重启”入口：同时发现主程序和站点资源更新时，依次准备主程序、后端声明的配套前端和最新站点资源，全部就绪后只重启一次；只有一类更新时保持对应卡片，底部只显示一个升级或重启按钮。重启前主动检查最新版本，可将旧待安装目标替换为更高版本并继续下载；API 仍支持指定单类更新。定时检查、检查失败及无更高版本时仍保留已下载包，下载和安装中不会更换目标。正式 V3 更新按版本号选择最高版本，支持跨多个 V3 小版本直接安装完整包；V2 到 V3 不属于此流程。站点原生扩展随重启加载，普通启动/重启不会检查或下载更新。
 - `GITHUB_PROXY` 镜像前缀可省略尾斜杠，允许带路径；修改配置仍遵循设置项的重启提示。站点资源清单、目录和文件遇到连接失败、超时或暂时性 HTTP 错误时最多尝试三次，间隔一秒、两秒；文件重试从头下载，失败内容不会进入安装清单。下载动作刷新一次清单并在后台复用，避免重复请求或沿用旧检查结果。错误摘要包含检查或下载阶段及具体网络原因；`state=failed` 表示操作失败，`can_update=true` 表示允许重试，只有 `can_install=true` 才能安装。
 - 页面中的“稍后”会在当前浏览器暂停提醒 24 小时，“忽略此版本”只屏蔽当前版本；出现更高版本时会重新提示

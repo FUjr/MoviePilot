@@ -42,7 +42,7 @@ def prepare_install_tree(tmp_path: Path, request):
         module = load_local_setup_module()
         temp_path = tmp_path
         root_dir = temp_path / "MoviePilot"
-        resource_dir = root_dir / "app" / "infrastructure"
+        resource_dir = root_dir / "app" / "application" / "site"
         runtime_dir = root_dir / ".runtime"
         public_dir = root_dir / "public"
         venv_dir = root_dir / "venv"
@@ -58,6 +58,9 @@ def prepare_install_tree(tmp_path: Path, request):
         install_env_file.write_text("CONFIG_DIR=/tmp/moviepilot-config\n", encoding="utf-8")
         (root_dir / "moviepilot").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
         (resource_dir / "sites.py").write_text("generated\n", encoding="utf-8")
+        (resource_dir / "sites.pyi").write_text("typing\n", encoding="utf-8")
+        (resource_dir / "user.sites.v3.json").write_text("{}\n", encoding="utf-8")
+        (resource_dir / "sites.cpython-314-x86_64-linux-gnu.so").write_bytes(b"native")
         (resource_dir / "user.sites.v3.bin").write_bytes(b"binary")
         (temp_config_dir / "moviepilot.runtime.json").write_text("{}", encoding="utf-8")
         (temp_config_dir / "moviepilot.frontend.runtime.json").write_text("{}", encoding="utf-8")
@@ -132,8 +135,12 @@ def test_uninstall_keeps_config_by_default(prepare_install_tree) -> None:
     assert not venv_dir.exists()
     assert not (root_dir / ".runtime").exists()
     assert not (root_dir / "public").exists()
-    assert not (root_dir / "app" / "infrastructure" / "sites.py").exists()
-    assert not (root_dir / "app" / "infrastructure" / "user.sites.v3.bin").exists()
+    resource_dir = root_dir / "app" / "application" / "site"
+    assert (resource_dir / "sites.py").exists()
+    assert (resource_dir / "sites.pyi").exists()
+    assert (resource_dir / "user.sites.v3.json").exists()
+    assert not (resource_dir / "sites.cpython-314-x86_64-linux-gnu.so").exists()
+    assert not (resource_dir / "user.sites.v3.bin").exists()
     assert not cli_link.exists()
 
 

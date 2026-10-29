@@ -69,6 +69,12 @@ class SiteQueryService:
             domains=domains,
         )
 
+    def list_ordered_sync(self) -> builtins.list[Site]:
+        """
+        同步返回按优先级排列的站点配置 DTO，供兼容索引接口使用。
+        """
+        return [Site.model_validate(item) for item in self._repository.list_order_by_pri()]
+
     async def list(self) -> builtins.list[Site]:
         """
         返回全部站点配置 DTO。

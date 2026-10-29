@@ -43,7 +43,6 @@
     "pydantic-computed": "Pydantic computed_field 需要叠加 property；mypy 的 prop-decorator 不能完整表达此组合。保留 Schema 和只读计算字段行为。",
     "legacy-subscribe": "稳定 SDK 接收历史插件的宽参数/返回合同并转接新订阅服务；旧入口与新实现签名不同，不能直接修改插件可见 API。",
     "legacy-config-int": "绿联历史配置接受任意对象尝试 int 转换，并在原有异常分支回退；静态 object 不承诺 __int__。提前收窄允许类型会改变旧配置转换和回退行为。",
-    "binary-site-contract": "站点资源是独立构建与发布的二进制模块，本地 sites.pyi 描述其公开接口。按文件摘要锁定，接口变化需与资源源码、宿主和插件调用方一并复核。",
     "fastapi-response-default": "FastAPI 只把精确的 Response 类型识别为响应注入参数，Optional[Response] 会导致路由注册失败；None 默认值同时兼容旧的直接调用。保留原参数顺序和默认值，仅锁定 assignment 例外，接口方法体继续严格检查。",
     "async-cache-compat": "异步缓存后端保留同步 CacheBackend 的公开继承关系，async 方法与同步父类返回合同天然不兼容；精确锁定 override 例外，避免改变插件的 isinstance 和生命周期行为。"
   },
@@ -1339,11 +1338,5 @@
       "reason": "legacy-subscribe"
     }
   ],
-  "stubs": [
-    {
-      "path": "app/application/site/sites.pyi",
-      "sha256": "b3f0ded8022739b361b730c7dcc47b949c28f0be466d846c15b396937f8b86f0",
-      "reason": "binary-site-contract"
-    }
-  ]
+  "stubs": []
 }

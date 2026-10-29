@@ -5,9 +5,57 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Optional, TypedDict, cast
+from typing import Optional, Protocol, TypedDict, cast
 
 from app.schemas.common import JsonData
+
+
+class SiteAuthHttpPort(Protocol):
+    """
+    站点认证所需的同步 JSON 请求端口，由启动组合根装配传输实现。
+    """
+
+    def get_json(
+        self, *, url: str, headers: dict[str, str], timeout: int,
+    ) -> tuple[Optional[int], dict[str, JsonData]]:
+        """
+        请求认证数据并在读取后释放响应。
+
+        :param url: 可信站点资源定义的认证接口地址
+        :param headers: 本次认证专用请求头，可能包含凭据
+        :param timeout: 单次请求超时秒数
+        :return: HTTP 状态码与 JSON 对象；无响应时为 None 和空字典
+        :raises ValueError: 成功响应不是 JSON 对象
+        """
+        ...
+
+
+_configured_site_auth_http: Optional[SiteAuthHttpPort] = None
+
+
+def configure_site_auth_http(port: SiteAuthHttpPort) -> None:
+    """
+    登记当前生命周期使用的站点认证传输端口。
+    """
+    global _configured_site_auth_http
+    _configured_site_auth_http = port
+
+
+def reset_site_auth_http() -> None:
+    """
+    清除站点认证传输端口，防止跨生命周期保留旧依赖。
+    """
+    global _configured_site_auth_http
+    _configured_site_auth_http = None
+
+
+def get_site_auth_http() -> SiteAuthHttpPort:
+    """
+    取得已装配的站点认证传输；未装配时明确报错。
+    """
+    if _configured_site_auth_http is None:
+        raise RuntimeError("站点认证传输尚未配置")
+    return _configured_site_auth_http
 
 
 class _SiteAuthConfig(TypedDict):

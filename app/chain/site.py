@@ -1090,11 +1090,12 @@ class SiteChain(InteractionChainMixin, ChainBase):
                 if protocol_test:
                     state, message = protocol_test(site_info)
                 else:
+                    login_path = indexer.get("login_path")
                     state, message = self.__test(
                         replace(
                             site_info,
                             url=site_rules.resolve_page_url(
-                                site_info.url, indexer.get("login_path")
+                                site_info.url, login_path if isinstance(login_path, str) else None
                             ),
                         )
                     )

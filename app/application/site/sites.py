@@ -1,17 +1,11 @@
 """
-站点资源模块（闭源 sites.so 的纯 Python 还原版）
+随源码分发的站点索引、认证兼容接口和访问流控。
 
-由逆向分析还原，接口与 Cython 闭源版（app.helper.sites，v2.4.9）保持一致。
-数据资源：user.sites.v2.json（解密后的明文配置），由本模块直接加载，
-不再依赖 Fernet 加密、不再依赖站点用户认证门控（auth_level 固定为最高级别 99）。
-
-与闭源版的差异：
-- 数据文件为明文 JSON（user.sites.v2.json），无加密。
-- auth_level 固定为最高级别 99（站点&特殊密钥认证可见），所有功能开箱即用。
-- 认证/索引的远程站点交互逻辑还原为可读实现。
+站点数据使用明文 JSON；持久化查询和 HTTP 传输通过宿主应用服务及注入端口完成。
 """
 
-import abc
+from __future__ import annotations
+
 import base64
 import copy
 import hashlib
@@ -21,46 +15,43 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
+from urllib.parse import urlencode, urlsplit
 
-from cryptography.fernet import Fernet
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
+from cryptography.fernet import Fernet
 
-from app.core.config import settings
-from app.db.site_oper import SiteOper
-from app.db.models import Site
-from app.log import logger
-from app.utils.http import RequestUtils
-from app.utils.string import StringUtils
+from app.application.configuration import get_configured_system_config
+from app.application.site.auth import get_site_auth_http, normalize_site_auth_params
+from app.application.site.query import get_configured_site_query_service
+from app.domain.site import extract_domain
+from app.foundation.singleton import SingletonClass
+from app.runtime.log import logger
+from app.runtime.settings import get_runtime_setting
+from app.schemas.common import JsonData
+from app.schemas.site import Site
+from app.schemas.types import SystemConfigKey
 
-# 资源版本号（与闭源版编译常量一致）
-__SITEHELPER_VERSION__ = "2.4.9"
-__PUBKEY_TEMPLATE__ = "\n-----BEGIN PUBLIC KEY-----\n{publicKey}\n-----END PUBLIC KEY-----\n"
+# 此版本标记本地 Python 认证实现，与官方二进制资源独立发布。
+__SITEHELPER_VERSION__ = "3.0.0"
+SITES_JSON_FILE = Path(__file__).with_name("user.sites.v3.json")
 
-# Fernet 密钥（逆向还原的编译期常量，仅用于兼容旧版加密 .bin）
-__FERNET_KEY__ = b"c1qlByOVxi1-AnpLlYqJwP74XV9mF4GpKWUyjW1dXL8="
-
-# 站点索引配置数据文件（明文 JSON）
-SITES_JSON_FILE = Path(__file__).parent / "user.sites.v2.json"
-
-
-# ============================================================
-# 模块级加密函数
-# ============================================================
 
 def decrypt(data: bytes, key: bytes) -> bytes:
     """
     解密二进制数据
     """
-    return Fernet(key).decrypt(data)
+    result: bytes = Fernet(key).decrypt(data)
+    return result
 
 
 def encrypt_message(message: str, key: bytes) -> str:
     """
     使用给定的key对消息进行加密，并返回加密后的字符串
     """
-    return Fernet(key).encrypt(message.encode("utf-8")).decode("utf-8")
+    result: str = Fernet(key).encrypt(message.encode("utf-8")).decode("utf-8")
+    return result
 
 
 def hash_sha256(message: str) -> str:
@@ -87,440 +78,322 @@ def nexusphp_encrypt(data_str: str, key: bytes) -> str:
     return base64.b64encode(payload.encode("utf-8")).decode("utf-8")
 
 
-# ============================================================
-# 单例与流控
-# ============================================================
-
-class SiteSingleton(abc.ABCMeta):
-    """
-    站点资源单例元类
-    """
-    _instances: Dict[type, Any] = {}
-
-    def __call__(cls, *args: Any, **kwargs: Any):
-        if cls not in cls._instances:
-            cls._instances[cls] = super().__call__(*args, **kwargs)
-        return cls._instances[cls]
-
-
 class SiteRateLimiter:
     """
-    站点访问流控器
+    在线程锁内实施固定窗口次数限制和相邻请求的最小间隔。
 
-    :param limit_interval: 单位时间（秒）
-    :param limit_count: 单位时间内访问次数
-    :param limit_seconds: 访问间隔（秒）
+    :param limit_interval: 统计窗口秒数，None 或非正数禁用窗口限制
+    :param limit_count: 窗口内最大请求数，None 或非正数禁用窗口限制
+    :param limit_seconds: 请求最小间隔秒数，None 或非正数禁用间隔限制
     """
 
-    def __init__(self, limit_interval: int, limit_count: int, limit_seconds: int):
-        self._limit_interval = limit_interval
-        self._limit_count = limit_count
-        self._limit_seconds = limit_seconds
-        self._last_access_time = 0.0
+    def __init__(self, limit_interval: Optional[int], limit_count: Optional[int],
+                 limit_seconds: Optional[int]) -> None:
+        """
+        规范化可空的流控参数，拒绝请求不消耗额度或推迟恢复时间。
+        """
+        self._limits = tuple(max(0, int(value or 0)) for value in (limit_interval, limit_count, limit_seconds))
+        self._last_access_time: Optional[float] = None
+        self._window_start: Optional[float] = None
         self._access_count = 0
         self._lock = threading.Lock()
 
-    def check_rate_limit(self) -> Tuple[bool, str]:
+    @property
+    def limits(self) -> tuple[int, ...]:
         """
-        检查是否超出访问频率控制
-        :return: 超出返回True，否则返回False，超出时返回错误信息
+        返回用于判断是否需要重建流控器的规范化配置。
+        """
+        return self._limits
+
+    def check_rate_limit(self) -> tuple[bool, str]:
+        """
+        预留一次访问额度；触发限制时返回 True 和说明，否则返回 False。
         """
         with self._lock:
-            now = time.time()
-            if self._limit_seconds and now - self._last_access_time < self._limit_seconds:
-                return True, f"触发流控规则，访问间隔不得小于 {self._limit_seconds} 秒"
-            if self._limit_interval and self._limit_count:
-                if now - self._last_access_time >= self._limit_interval:
+            now = time.monotonic()
+            interval, count, seconds = self._limits
+            if seconds and self._last_access_time is not None and now - self._last_access_time < seconds:
+                return True, f"触发流控规则，访问间隔不得小于 {seconds} 秒"
+            if interval and count:
+                if self._window_start is None or now - self._window_start >= interval:
+                    self._window_start = now
                     self._access_count = 0
+                if self._access_count >= count:
+                    return True, f"触发流控规则，{interval} 秒内访问次数不得超过 {count} 次"
                 self._access_count += 1
-                if self._access_count > self._limit_count:
-                    last = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self._last_access_time))
-                    return True, (f"触发流控规则，{self._limit_interval} 秒内访问次数不得超过 "
-                                  f"{self._limit_count} 次，上次访问时间：{last}")
             self._last_access_time = now
             return False, ""
 
 
-# ============================================================
-# 站点认证客户端
-# ============================================================
-
 class _SiteAuthHandle:
     """
-    站点认证处理
-
-    - sunny: 通过 Sunny PT API 校验 API Key 及下载权限
-    - yemapt: 通过 YemaPT 用户信息接口校验 UID + Auth
-    - 其余: NexusPHP 系 passkey/用户名认证
+    保留本地实现的站点认证协议，通过注入端口访问认证接口。
     """
 
-    def __init__(self, authsites: Dict[str, dict]):
-        self._authsites = authsites
-
-    def get(self, site: str) -> Optional[dict]:
-        """获取指定认证站点配置，不存在时返回 None"""
-        return self._authsites.get(site)
-
-    def info(self) -> Dict[str, dict]:
-        """获取可公开展示的认证站点及表单配置"""
-        return self._authsites
-
-    def __sunnypt_auth(self, siteconf: dict, params: dict) -> Tuple[bool, str]:
+    @staticmethod
+    def authenticate(site: str, siteconf: dict[str, JsonData], params: dict[str, JsonData]) -> tuple[bool, str]:
         """
-        通过用户信息接口验证 Sunny PT API Key 和下载权限
+        分发站点认证，返回远端校验结果；缺少凭据或站点地址时不发请求。
         """
-        apikey = params.get("apikey")
-        if not apikey:
-            return False, "API Key 未设置"
-        api_url = siteconf.get("api_url") or "https://api.sunnypt.top/api/v1/mp"
-        try:
-            res = RequestUtils(headers={"Authorization": f"Bearer {apikey}"}).get_res(
-                f"{api_url}/user/info", timeout=15)
-            if res and res.status_code == 200:
-                data = res.json()
-                if data.get("success") and data.get("data", {}).get("can_download"):
-                    return True, "Sunny PT 认证成功（API Key）"
-                return False, data.get("message") or "API Key 无效或无下载权限"
-            return False, f"请求失败，状态码：{res.status_code if res else '无响应'}"
-        except Exception as err:
-            return False, str(err)
-
-    def __yemapt_auth(self, siteconf: dict, params: dict) -> Tuple[bool, str]:
-        """
-        通过用户信息接口验证 YemaPT UID 和 Auth
-        """
-        uid = params.get("uid")
-        auth = params.get("auth")
-        if not uid or not auth:
-            return False, "UID 或 Auth 未设置"
-        domain = siteconf.get("domain") or "https://www.yemapt.org/"
-        try:
-            res = RequestUtils(headers={"Authorization": f"{auth}", "User-Agent": settings.USER_AGENT}).get_res(
-                f"{domain}api.php?action=getuserinfo&uid={uid}", timeout=15)
-            if res and res.status_code == 200:
-                data = res.json()
-                if data.get("status") == "success":
-                    return True, "YemaPT 认证成功"
-                return False, data.get("message") or "UID/Auth 校验失败"
-            return False, f"错误码：{res.status_code if res else '无响应'}"
-        except Exception as err:
-            return False, str(err)
-
-    def __nexusphp_auth(self, siteconf: dict, params: dict) -> Tuple[bool, str]:
-        """
-        NexusPHP 系站点 passkey 认证
-        """
-        passkey = params.get("passkey")
-        if not passkey:
-            return False, "passkey 未设置"
-        domain = siteconf.get("domain", "")
-        try:
-            res = RequestUtils(headers={"User-Agent": settings.USER_AGENT}).get_res(
-                f"{domain}api.php?action=getuserinfo&passkey={passkey}", timeout=15)
-            if res and res.status_code == 200:
-                data = res.json()
-                if data.get("status") == "success":
-                    return True, "认证成功"
-                return False, data.get("message") or "passkey 校验失败"
-            return False, f"错误码：{res.status_code if res else '无响应'}"
-        except Exception as err:
-            return False, str(err)
+        headers = {"User-Agent": get_runtime_setting("USER_AGENT")}
+        if site == "sunny":
+            if not params.get("apikey"):
+                return False, "API Key 未设置"
+            headers["Authorization"] = f"Bearer {params['apikey']}"
+            url = f"{siteconf.get('api_url') or 'https://api.sunnypt.top/api/v1/mp'}/user/info"
+        elif site == "yemapt":
+            if not params.get("uid") or not params.get("auth"):
+                return False, "UID 或 Auth 未设置"
+            headers["Authorization"] = str(params["auth"])
+            domain = str(siteconf.get("domain") or "https://www.yemapt.org/")
+            url = f"{domain.rstrip('/')}/api.php?{urlencode({'action': 'getuserinfo', 'uid': params['uid']})}"
+        else:
+            if not params.get("passkey"):
+                return False, "此认证协议需要 passkey"
+            domain = str(siteconf.get("domain") or "")
+            if not domain:
+                return False, "此站点尚未配置认证接口"
+            query = urlencode({"action": "getuserinfo", "passkey": params["passkey"]})
+            url = f"{domain.rstrip('/')}/api.php?{query}"
+        status_code, data = get_site_auth_http().get_json(url=url, headers=headers, timeout=15)
+        if status_code != 200:
+            return False, f"请求失败，状态码：{status_code if status_code is not None else '无响应'}"
+        if site == "sunny":
+            details = data.get("data") or {}
+            accepted = bool(data.get("success") and isinstance(details, dict) and details.get("can_download"))
+        else:
+            accepted = data.get("status") == "success"
+        return accepted, "认证成功" if accepted else "站点凭据校验失败或无下载权限"
 
 
-# ============================================================
-# 主类
-# ============================================================
-
-class SitesHelper(metaclass=SiteSingleton):
+class SitesHelper(metaclass=SingletonClass):
     """
-    站点资源助手：加载站点索引配置、用户认证、站点流控
+    提供 V3 宿主和旧插件共用的站点资源接口。
 
-    还原自闭源版 app.helper.sites.SitesHelper（v2.4.9）
+    本地权限策略沿用此 fork 的等级 99，远端认证结果仍按真实返回值报告。
     """
 
-    def __init__(self):
-        # 最高认证级别 99：站点&特殊密钥认证可见，满足所有插件/功能鉴权
-        self._auth_level: int = 99
-        self._auth_version: str = ""
-        self._indexer_version: str = ""
-        self._authsites: Dict[str, dict] = {}
-        self._indexers: Dict[str, dict] = {}
-        self._indexers_by_domain: Dict[str, dict] = {}
-        self._ratelimiters: Dict[str, SiteRateLimiter] = {}
+    def __init__(self) -> None:
+        """
+        加载源码附带的资源，不在构造阶段访问数据库或网络。
+        """
+        self._auth_level = 99
+        self._auth_version = __SITEHELPER_VERSION__
+        self._indexer_version = ""
+        self._authsites = copy.deepcopy(_AUTHSITES_DATA)
+        self._indexers: dict[str, dict[str, Any]] = {}
+        self._indexers_by_domain: dict[str, dict[str, Any]] = {}
+        self._ratelimiters: dict[str, SiteRateLimiter] = {}
+        self._limiter_domains: dict[str, str] = {}
         self._lock = threading.RLock()
         self._load_resources()
 
-    # ---------- 资源加载 ----------
-
-    def _load_resources(self):
+    def _load_resources(self) -> None:
         """
-        加载站点索引配置
+        加载 V3 明文资源，保留未知字段并为主域名及备用域名建立索引。
         """
-        self._authsites = self._load_authsites()
-        self._auth_version = __SITEHELPER_VERSION__
-
-        try:
-            if SITES_JSON_FILE.exists():
-                with open(SITES_JSON_FILE, "r", encoding="utf-8") as fp:
-                    data = json.load(fp)
-                self._indexers = data.get("indexers") or {}
-                self._indexer_version = data.get("version") or ""
-            else:
-                logger.warn(f"站点资源文件不存在：{SITES_JSON_FILE}")
-        except Exception as err:
-            logger.error(f"加载站点索引配置失败：{err}")
-            self._indexers = {}
-
-        # 建立域名索引（含 ext_domains 别名）
-        for site_id, conf in self._indexers.items():
-            domain = StringUtils.get_url_domain(conf.get("domain") or "")
-            if not domain:
-                continue
-            entry = {
-                "id": conf.get("id") or site_id,
-                "name": conf.get("name", ""),
-                "url": conf.get("domain", ""),
-                "public": conf.get("public", False),
-            }
-            self._indexers_by_domain[domain] = entry
-            for ext in conf.get("ext_domains") or []:
-                ext_domain = StringUtils.get_url_domain(ext)
-                if ext_domain:
-                    self._indexers_by_domain[ext_domain] = entry
-
-        logger.info(f"认证资源版本：{self._auth_version}")
-        logger.info(f"站点资源版本：{self._indexer_version}")
-
-    def _load_authsites(self) -> Dict[str, dict]:
-        """
-        认证站点配置（还原自闭源版 .so 内置数据）
-        """
-        return _AUTHSITES_DATA
-
-    # ---------- 属性 ----------
+        with SITES_JSON_FILE.open(encoding="utf-8") as stream:
+            data = json.load(stream)
+        for site_id, conf in data["indexers"].items():
+            self.add_indexer({**conf, "id": conf.get("id") or site_id})
+        self._indexer_version = str(data["version"])
+        for site_id, conf in self._authsites.items():
+            resource = self._indexers.get(site_id)
+            # 旧认证表只含表单和图标；认证 URL 取可信资源或图标的来源，不采用用户提交的地址。
+            origin = urlsplit(conf.get("icon") or "")
+            conf["domain"] = resource["domain"] if resource else f"{origin.scheme}://{origin.netloc}/"
+        logger.info("本地站点资源版本：%s", self._indexer_version)
 
     @property
     def auth_level(self) -> int:
-        """获取用户权限等级"""
+        """
+        返回此 fork 的本地权限等级。
+        """
         return self._auth_level
 
     @property
     def auth_version(self) -> str:
-        """获取认证资源版本"""
+        """
+        返回本地 Python 认证实现版本。
+        """
         return self._auth_version
 
     @property
     def indexer_version(self) -> str:
-        """获取站点资源版本"""
+        """
+        返回随源码分发的站点索引数据版本。
+        """
         return self._indexer_version
 
-    # ---------- 站点查询 ----------
+    def _resource_conf(self, domain: str) -> Optional[dict[str, Any]]:
+        """
+        按主域名或备用域名取得资源副本，避免运行配置污染内置规则。
+        """
+        with self._lock:
+            entry = self._indexers_by_domain.get(extract_domain(domain))
+            return copy.deepcopy(self._indexers.get(entry["id"])) if entry else None
 
-    def get_indexers(self) -> List[dict]:
+    def _configured_indexers(self, sites: list[Site]) -> list[dict[str, Any]]:
         """
-        获取所有站点索引配置，包括站点属性
+        按仓储优先级投影已配置、已启用且存在索引规则的站点。
         """
-        ret: List[dict] = []
-        seen: set = set()
-        for domain, entry in self._indexers_by_domain.items():
-            site_id = entry.get("id")
-            if site_id in seen:
+        result = []
+        for site in sites:
+            if site.is_active is False:
                 continue
-            seen.add(site_id)
-            conf = self._indexers.get(site_id)
-            if not conf:
-                continue
-            site_info = self._find_site_by_config(conf)
-            indexer = self._merge_site_conf(conf, site_info)
-            if indexer:
-                ret.append(indexer)
-        return ret
+            conf = self._resource_conf(site.domain or site.url or "")
+            if conf:
+                result.append(self._merge_site_conf(conf, site))
+        return result
 
-    def _find_site_by_config(self, conf: dict) -> Optional[Site]:
+    def get_indexers(self) -> list[dict[str, JsonData]]:
         """
-        按索引器配置匹配数据库站点。
+        同步返回已配置且启用的站点，按站点优先级排序。
+        """
+        return self._configured_indexers(get_configured_site_query_service().list_ordered_sync())
 
-        数据库站点记录存于其登录域名（可能不同于索引器主域名），
-        需遍历索引器全部已知域名（主域名 + ext_domains）逐一匹配。
+    async def async_get_indexers(self) -> list[dict[str, JsonData]]:
         """
-        domains = []
-        if conf.get("domain"):
-            domains.append(conf["domain"])
-        for ext in conf.get("ext_domains") or []:
-            domains.append(ext)
-        for raw_domain in domains:
-            site_info = SiteOper().get_by_domain(raw_domain)
-            if site_info:
-                return site_info
-            # 兼容去除 scheme 的域名
-            site_info = SiteOper().get_by_domain(StringUtils.get_url_domain(raw_domain))
-            if site_info:
-                return site_info
-        return None
+        使用异步查询返回已配置且启用的站点，不在事件循环中执行同步查询。
+        """
+        return self._configured_indexers(await get_configured_site_query_service().list_ordered())
 
-    async def async_get_indexers(self) -> List[dict]:
+    def _indexer_from_sites(self, domain: str, sites: list[Site]) -> Optional[dict[str, Any]]:
         """
-        异步获取所有站点索引配置，包括站点属性
+        按主域名或别名匹配配置；未添加的站点仍可读取内置规则。
         """
-        return self.get_indexers()
-
-    def get_indexer(self, domain: str) -> Optional[dict]:
-        """
-        获取站点索引配置，包括站点属性
-        """
-        entry = self._indexers_by_domain.get(domain)
-        if not entry:
-            return None
-        conf = self._indexers.get(entry.get("id"))
+        conf = self._resource_conf(domain)
         if not conf:
             return None
-        site_info = self._find_site_by_config(conf)
-        return self._merge_site_conf(conf, site_info)
+        for site in sites:
+            configured = self._resource_conf(site.domain or site.url or "")
+            if configured and configured["id"] == conf["id"]:
+                return self._merge_site_conf(conf, site)
+        return copy.deepcopy(conf)
 
-    async def async_get_indexer(self, domain: str) -> Optional[dict]:
+    def get_indexer(self, domain: str) -> Optional[dict[str, JsonData]]:
         """
-        异步获取站点索引配置，包括站点属性
+        同步按完整地址或裸域名返回索引配置，包括停用站点。
         """
-        return self.get_indexer(domain)
+        return self._indexer_from_sites(domain, get_configured_site_query_service().list_ordered_sync())
 
-    def get_indexsites(self) -> dict:
+    async def async_get_indexer(self, domain: str) -> Optional[dict[str, JsonData]]:
         """
-        查询所有索引站点信息
+        异步按完整地址或裸域名返回索引配置，包括停用站点。
         """
-        return copy.deepcopy(self._indexers_by_domain)
+        return self._indexer_from_sites(domain, await get_configured_site_query_service().list_ordered())
 
-    def get_authsites(self) -> dict:
+    def get_indexsites(self) -> dict[str, dict[str, JsonData]]:
         """
-        查询所有认证参数
+        返回全部支持站点及别名的独立副本，供添加站点和插件使用。
+        """
+        with self._lock:
+            return copy.deepcopy(self._indexers_by_domain)
+
+    def get_authsites(self) -> dict[str, dict[str, JsonData]]:
+        """
+        返回认证表单的独立副本。
         """
         return copy.deepcopy(self._authsites)
 
-    def add_indexer(self, indexer: dict):
+    def add_indexer(self, indexer: dict[str, JsonData]) -> None:
         """
-        添加站点索引配置
+        添加或替换索引规则和全部别名，不保留调用方可变对象或过期别名。
         """
         site_id = indexer.get("id")
-        if not site_id:
+        if not isinstance(site_id, str) or not site_id:
             return
-        self._indexers[site_id] = indexer
-        domain = StringUtils.get_url_domain(indexer.get("domain") or "")
-        if domain:
-            self._indexers_by_domain[domain] = {
-                "id": site_id,
-                "name": indexer.get("name", ""),
-                "url": indexer.get("domain", ""),
-                "public": indexer.get("public", False),
+        with self._lock:
+            self._indexers[site_id] = copy.deepcopy(indexer)
+            for domain, old_entry in self._indexers_by_domain.items():
+                if old_entry["id"] == site_id:
+                    self._limiter_domains.pop(domain, None)
+            self._indexers_by_domain = {
+                key: entry for key, entry in self._indexers_by_domain.items() if entry["id"] != site_id
             }
+            entry = {"id": site_id, "name": indexer.get("name", ""),
+                     "url": indexer.get("domain", ""), "public": bool(indexer.get("public"))}
+            extra_domains = indexer.get("ext_domains")
+            addresses = [indexer.get("domain"), *(extra_domains if isinstance(extra_domains, list) else [])]
+            for address in addresses:
+                if not isinstance(address, str):
+                    continue
+                domain = extract_domain(address)
+                if domain:
+                    self._indexers_by_domain[domain] = entry
 
-    # ---------- 站点属性合并 ----------
-
-    def _merge_site_conf(self, conf: dict, site_info: Optional[Site]) -> Optional[dict]:
+    def _merge_site_conf(self, conf: dict[str, Any], site_info: Site) -> dict[str, Any]:
         """
-        合并站点属性
-
-        将索引器配置与数据库站点属性（cookie、ua、proxy、优先级等）合并
+        合并站点凭据和运行参数；爬虫基础地址须保留协议和路径。
         """
-        if not conf:
-            return None
         indexer = copy.deepcopy(conf)
-        if site_info:
-            # 站点已配置到数据库：使用数据库站点数字 ID，
-            # 与 IndexerSites/RssSites 等按数据库 ID 选择站点的逻辑保持一致
-            indexer["id"] = site_info.id
-            indexer["name"] = site_info.name or indexer.get("name")
-            site_url = site_info.url or indexer.get("domain")
-            indexer["url"] = site_url
-            # 爬虫把 domain 当作基础 URL 拼接请求路径，不能使用数据库中的裸域名键。
-            indexer["domain"] = site_url
-            indexer["cookie"] = site_info.cookie
-            indexer["ua"] = site_info.ua
-            indexer["apikey"] = site_info.apikey
-            indexer["token"] = site_info.token
-            indexer["proxy"] = site_info.proxy
-            indexer["pri"] = site_info.pri
-            indexer["downloader"] = site_info.downloader
-            indexer["rss"] = site_info.rss
-            indexer["filter"] = site_info.filter
-            indexer["render"] = site_info.render
-            indexer["timeout"] = site_info.timeout
-            indexer["public"] = bool(site_info.public or indexer.get("public"))
-            indexer["limit_interval"] = site_info.limit_interval
-            indexer["limit_count"] = site_info.limit_count
-            indexer["limit_seconds"] = site_info.limit_seconds
-            indexer["is_active"] = site_info.is_active
-        # 流控器
-        interval = int(indexer.get("limit_interval") or 0)
-        count = int(indexer.get("limit_count") or 0)
-        seconds = int(indexer.get("limit_seconds") or 0)
-        domain = StringUtils.get_url_domain(indexer.get("domain") or "")
-        if domain and (interval or count or seconds):
-            self._ratelimiters[domain] = SiteRateLimiter(interval, count, seconds)
+        indexer.update(site_info.model_dump(exclude={"domain", "url", "public", "name"}))
+        indexer["name"] = site_info.name or conf.get("name")
+        indexer["domain"] = site_info.url or conf["domain"]
+        indexer["url"] = indexer["domain"]
+        indexer["public"] = bool(site_info.public or conf.get("public"))
+        self._configure_limiter(extract_domain(indexer["domain"]), indexer)
+        with self._lock:
+            for address in [conf["domain"], *(conf.get("ext_domains") or []), site_info.domain, indexer["domain"]]:
+                self._limiter_domains[extract_domain(address)] = extract_domain(indexer["domain"])
         return indexer
 
-    # ---------- 站点流控 ----------
-
-    def check(self, domain: str) -> Tuple[bool, str]:
+    def _configure_limiter(self, domain: str, indexer: dict[str, Any]) -> None:
         """
-        检查站点流控
+        配置未变化时复用流控历史，禁用限制时移除旧状态。
         """
-        limiter = self._ratelimiters.get(domain)
-        if not limiter:
-            site_info = SiteOper().get_by_domain(domain)
-            if site_info:
-                limiter = SiteRateLimiter(
-                    int(site_info.limit_interval or 0),
-                    int(site_info.limit_count or 0),
-                    int(site_info.limit_seconds or 0),
-                )
-                self._ratelimiters[domain] = limiter
-        if limiter:
-            return limiter.check_rate_limit()
-        return False, ""
+        limits = tuple(max(0, int(indexer.get(key) or 0))
+                       for key in ("limit_interval", "limit_count", "limit_seconds"))
+        with self._lock:
+            if not any(limits):
+                self._ratelimiters.pop(domain, None)
+            elif domain not in self._ratelimiters or self._ratelimiters[domain].limits != limits:
+                self._ratelimiters[domain] = SiteRateLimiter(*limits)
 
-    # ---------- 用户认证 ----------
+    def check(self, domain: str) -> tuple[bool, str]:
+        """
+        检查并预留站点访问额度，主域名、完整地址和别名共用同一站点状态。
+        """
+        domain = extract_domain(domain)
+        with self._lock:
+            known_domain = self._limiter_domains.get(domain)
+        if known_domain is None:
+            self.get_indexer(domain)
+        with self._lock:
+            limiter = self._ratelimiters.get(self._limiter_domains.get(domain, domain))
+        return limiter.check_rate_limit() if limiter else (False, "")
 
     def check_user(self, site: Optional[str] = None,
-                   params: Optional[dict] = None) -> Tuple[bool, str]:
+                   params: Optional[dict[str, JsonData]] = None) -> tuple[bool, str]:
         """
-        验证用户，外部调用入口
+        校验站点凭据，兼容原始字段和 V3 的 SITE_PARAMETER 参数键名。
 
-        :param site: 认证站点 ID
-        :param params: 认证参数
-        :return: 是否认证成功及错误信息
+        :param site: 认证站点标识；省略时先读取 AUTH_SITE，再读取持久化配置
+        :param params: 显式提供的认证字段；省略时使用对应来源的配置
+        :return: 认证成功标记及不含凭据的结果说明
         """
-        site = site or ""
-        params = params or {}
         if not site:
-            from app.core.config import SystemConfigKey, SystemConfigOper
-            auth_conf = SystemConfigOper().get(SystemConfigKey.UserSiteAuthParams)
-            if auth_conf:
-                site = auth_conf.get("site") or ""
-                params = auth_conf.get("params") or {}
+            site = get_runtime_setting("AUTH_SITE") or ""
+            if site:
+                params = {key: os.environ.get(f"{site.upper()}_{key.upper()}", "")
+                          for key in self._authsites.get(site, {}).get("params", {})}
+            else:
+                auth_conf = get_configured_system_config().get(SystemConfigKey.UserSiteAuthParams) or {}
+                site, params = auth_conf.get("site") or "", auth_conf.get("params") or {}
         siteconf = self._authsites.get(site)
         if not siteconf:
             return False, f"未找到认证站点：{site}"
-        handle = _SiteAuthHandle(self._authsites)
+        normalized = normalize_site_auth_params(site, params, self._authsites)
+        raw_params = {key: normalized.get(f"{site.upper()}_{key.upper()}") for key in siteconf["params"]}
         try:
-            if site == "sunny":
-                status, msg = handle.__sunnypt_auth(siteconf, params)
-            elif site == "yemapt":
-                status, msg = handle.__yemapt_auth(siteconf, params)
-            else:
-                status, msg = handle.__nexusphp_auth(siteconf, params)
-        except Exception as err:
-            logger.error(f"{site}认证出错：{err}")
-            return False, str(err)
-        if status:
-            self._auth_level = 99
-            logger.info(f"{site} 认证成功")
-        return status, msg
+            return _SiteAuthHandle.authenticate(site, siteconf, raw_params)
+        except Exception as error:
+            # 传输异常可能携带带密钥的完整 URL，只记录异常类型。
+            logger.warning("%s 认证请求失败：%s", site, type(error).__name__)
+            return False, "站点认证请求失败"
 
 
-# ============================================================
-# 认证站点配置数据（还原自闭源版 .so 内置数据，v2.4.9）
-# ============================================================
-
-_AUTHSITES_DATA: Dict[str, dict] = {
+_AUTHSITES_DATA: dict[str, dict[str, Any]] = {
     "hhclub": {
         "name": "HHClub", "icon": "https://hhanclub.net/favicon.ico",
         "params": {

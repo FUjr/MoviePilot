@@ -267,7 +267,8 @@ async def read_sites_by_media_type(
             continue
         if indexer.get("id") is not None:
             supported_ids.update(_normalize_site_ids([indexer.get("id")]))
-        domain = site_rules.extract_domain(indexer.get("domain"))
+        resource_domain = indexer.get("domain")
+        domain = site_rules.extract_domain(resource_domain if isinstance(resource_domain, str) else None)
         if domain:
             supported_domains.add(domain)
 

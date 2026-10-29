@@ -1107,7 +1107,12 @@ class SystemUpdateManager(metaclass=SingletonClass):
     ) -> None:
         """
         只把旧版本的站点索引和原生资源叠加到新版源码目录。
+
+        新归档携带源码实现时只清理原生扩展，避免旧二进制覆盖同名 Python 模块。
         """
+        if (destination_dir / "sites.py").is_file():
+            self._clear_staged_native_resources(destination_dir)
+            return
         if not source_dir.is_dir():
             return
         destination_dir.mkdir(parents=True, exist_ok=True)
@@ -1652,6 +1657,8 @@ class SystemUpdateManager(metaclass=SingletonClass):
         """
         校验完整资源文件只能来自更新暂存目录且摘要匹配。
         """
+        if self._uses_source_site_bundle():
+            raise RuntimeError("源码站点模块通过代码更新，不接受二进制资源替换")
         files = prepared.get("resource_files")
         if not isinstance(files, list) or not files:
             raise RuntimeError("站点资源更新清单为空")
@@ -1734,6 +1741,30 @@ class SystemUpdateManager(metaclass=SingletonClass):
             raise RuntimeError("前端 Release 返回格式异常")
         return payload
 
+    @staticmethod
+    def _uses_source_site_bundle() -> bool:
+        """
+        按当前安装目录识别源码站点模块，不读取暂存区或历史安装。
+        """
+        root = get_runtime_setting("ROOT_PATH")
+        return isinstance(root, (str, os.PathLike)) and (
+            Path(root) / "app/application/site/sites.py"
+        ).is_file()
+
+    def _validate_source_site_archive(self, archive: zipfile.ZipFile, prefix: str) -> None:
+        """
+        源码模式只接受包含本地实现和配套 JSON 的后端归档。
+        """
+        if not self._uses_source_site_bundle():
+            return
+        for filename in ("sites.py", "user.sites.v3.json"):
+            try:
+                info = archive.getinfo(f"{prefix}/app/application/site/{filename}")
+            except KeyError as error:
+                raise RuntimeError("更新包缺少本分支的源码站点模块，请通过 Git 或本分支镜像更新") from error
+            if info.file_size == 0:
+                raise RuntimeError("更新包中的源码站点模块不完整")
+
     def _validate_backend_archive(self, version: str) -> str:
         """
         校验后端压缩包结构，并只读取其声明的前端版本。
@@ -1761,6 +1792,7 @@ class SystemUpdateManager(metaclass=SingletonClass):
             names = archive.namelist()
             if any(not any(name.endswith(f"/{item}") for name in names) for item in required):
                 raise RuntimeError("后端更新包缺少依赖锁定文件")
+            self._validate_source_site_archive(archive, version_name.rsplit("/", 1)[0])
             return frontend_match.group(1)
 
     def _check_system_baseline(self) -> None:

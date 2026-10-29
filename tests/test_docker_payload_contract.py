@@ -6,6 +6,8 @@ import shlex
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = ROOT / "docker" / "Dockerfile"
 UPDATER = ROOT / "docker" / "update.sh"
@@ -156,6 +158,11 @@ def test_update_script_keeps_new_host_entrypoint_during_runtime_migration(
     ):
         (stage_app / name).parent.mkdir(parents=True, exist_ok=True)
         (stage_app / name).write_text(content, encoding="utf-8")
+    resource_dir = stage_app / "app" / "application" / "site"
+    resource_dir.mkdir(parents=True)
+    (resource_dir / "sites.py").write_text("# 新版实现\n", encoding="utf-8")
+    (resource_dir / "user.sites.v3.json").write_text("{}\n", encoding="utf-8")
+    (resource_dir / "sites.cpython-314-x86_64-linux-gnu.so").write_bytes(b"stale")
     (temp_dir / "dist").mkdir(parents=True)
     (temp_dir / "dist" / "index.html").write_text("ok\n", encoding="utf-8")
     python_bin = venv_dir / "bin" / "python3"
@@ -176,9 +183,61 @@ stage_runtime_payload
 test "$(cat {shlex.quote(str(stage_plugins / '__init__.py'))})" = "new host"
 test -f {shlex.quote(str(stage_plugins / 'demoplugin' / '__init__.py'))}
 test ! -e {shlex.quote(str(stage_plugins / 'stale'))}
+test ! -e {shlex.quote(str(resource_dir / 'sites.cpython-314-x86_64-linux-gnu.so'))}
+test -s {shlex.quote(str(resource_dir / 'sites.py'))}
 """
 
     subprocess.run(["bash", "-c", script], check=True)
+
+
+@pytest.mark.parametrize(
+    ("archived_files", "current_files", "expected_source"),
+    [
+        (("sites.py", "user.sites.v3.json"), (), "archive"),
+        ((), ("sites.py", "user.sites.v3.json"), None),
+        (("sites.py",), ("sites.py", "user.sites.v3.json"), None),
+        (("user.sites.v3.json",), ("sites.py", "user.sites.v3.json"), None),
+        ((), ("sites.py",), None),
+    ],
+)
+def test_update_requires_complete_source_resource_bundle(
+    tmp_path: Path, archived_files, current_files, expected_source,
+) -> None:
+    """
+    更新仅接受归档中的源码整包，拒绝把旧资源拼接到官方或残缺归档。
+    """
+    app_dir = tmp_path / "current"
+    temp_dir = tmp_path / "temp"
+    stage_app = temp_dir / "App"
+    resource_dir = stage_app / "app/application/site"
+    current_dir = app_dir / "app/application/site"
+    resource_dir.mkdir(parents=True)
+    current_dir.mkdir(parents=True)
+    (stage_app / "app/plugins").mkdir(parents=True)
+    (stage_app / "app/plugins/__init__.py").write_text("# 宿主入口\n", encoding="utf-8")
+    for filename in ("version.py", "pyproject.toml", "uv.lock"):
+        (stage_app / filename).write_text("placeholder\n", encoding="utf-8")
+    (temp_dir / "dist").mkdir()
+    (temp_dir / "dist/index.html").write_text("frontend\n", encoding="utf-8")
+    for filename in archived_files:
+        (resource_dir / filename).write_text("archive\n", encoding="utf-8")
+    for filename in current_files:
+        (current_dir / filename).write_text("current\n", encoding="utf-8")
+    script = f"""
+set -eu
+CONFIG_DIR={shlex.quote(str(tmp_path / 'config'))}
+source {shlex.quote(str(UPDATER))}
+APP_DIR={shlex.quote(str(app_dir))}
+TMP_PATH={shlex.quote(str(temp_dir))}
+stage_runtime_payload
+"""
+    result = subprocess.run(["bash", "-c", script], check=False, capture_output=True, text=True)
+    if expected_source is None:
+        assert result.returncode != 0
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        for filename in ("sites.py", "user.sites.v3.json"):
+            assert (resource_dir / filename).read_text(encoding="utf-8").strip() == expected_source
 
 
 def test_release_workflows_pin_and_record_external_payload_identities() -> None:

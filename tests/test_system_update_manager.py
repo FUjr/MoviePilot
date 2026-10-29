@@ -69,6 +69,70 @@ def _response(payload, status_code=200):
     return SimpleNamespace(status_code=status_code, json=lambda: payload)
 
 
+@pytest.mark.parametrize("bundle", ["missing", "partial", "empty", "complete"])
+def test_source_install_requires_matching_backend_bundle(monkeypatch, tmp_path, bundle):
+    """
+    源码安装拒绝官方或残缺后端包，保留含配套实现和数据的更新契约。
+    """
+    manager = _docker_manager(monkeypatch, tmp_path)
+    source_dir = tmp_path / "app/app/application/site"
+    source_dir.mkdir(parents=True)
+    (source_dir / "sites.py").write_text("# 本地实现\n", encoding="utf-8")
+    manager._backend_archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(manager._backend_archive, "w") as archive:
+        prefix = "MoviePilot-v3.1.0"
+        archive.writestr(
+            f"{prefix}/version.py",
+            "APP_VERSION = 'v3.1.0'\nFRONTEND_VERSION = 'v3.1.0'\n",
+        )
+        archive.writestr(f"{prefix}/pyproject.toml", "[project]\n")
+        archive.writestr(f"{prefix}/uv.lock", "version = 1\n")
+        if bundle != "missing":
+            archive.writestr(f"{prefix}/app/application/site/sites.py", "# 新版实现\n")
+        if bundle in {"empty", "complete"}:
+            archive.writestr(
+                f"{prefix}/app/application/site/user.sites.v3.json",
+                "{}" if bundle == "complete" else "",
+            )
+    if bundle == "complete":
+        assert manager._validate_backend_archive("v3.1.0") == "v3.1.0"
+    else:
+        with pytest.raises(RuntimeError, match="源码站点模块"):
+            manager._validate_backend_archive("v3.1.0")
+
+
+def test_source_install_rejects_stale_binary_resource_manifest(monkeypatch, tmp_path):
+    """
+    切换源码模式后，历史已下载的官方二进制资源也不能继续安装。
+    """
+    manager = _docker_manager(monkeypatch, tmp_path)
+    source_dir = tmp_path / "app/app/application/site"
+    source_dir.mkdir(parents=True)
+    (source_dir / "sites.py").write_text("# 本地实现\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="不接受二进制资源替换"):
+        manager._validate_resource_manifest({"resource_files": []})
+
+
+def test_application_update_does_not_shadow_new_source_with_old_native_resource(monkeypatch, tmp_path):
+    """
+    新包含源码实现时清除同名原生扩展，不迁移旧索引和旧二进制资源。
+    """
+    manager = _docker_manager(monkeypatch, tmp_path)
+    current_dir = tmp_path / "current-resources"
+    destination_dir = tmp_path / "new-resources"
+    current_dir.mkdir()
+    destination_dir.mkdir()
+    (current_dir / "sites.cpython-test.so").write_bytes(b"old")
+    (current_dir / "user.sites.v3.bin").write_bytes(b"old")
+    (destination_dir / "sites.py").write_text("# 新版实现\n", encoding="utf-8")
+    (destination_dir / "sites.cpython-stale.so").write_bytes(b"stale")
+    (destination_dir / "user.sites.v3.json").write_text("{}", encoding="utf-8")
+
+    manager._copy_site_runtime_resources(current_dir, destination_dir)
+
+    assert {path.name for path in destination_dir.iterdir()} == {"sites.py", "user.sites.v3.json"}
+
+
 def test_status_reads_live_auto_update_setting_without_discarding_cached_update(monkeypatch, tmp_path):
     """
     切换提醒设置立即反映到状态，缓存版本仍供手动升级使用。

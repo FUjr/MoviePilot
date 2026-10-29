@@ -361,17 +361,12 @@ function download_staged_resource() {
     return 1
 }
 
-# 暂存插件与站点资源，规范化镜像前缀后下载匹配当前 Python ABI 的资源。
+# 暂存插件与源码附带的站点资源，保留更新事务的回滚能力。
 function stage_runtime_payload() {
     local stage_app="${TMP_PATH}/App"
     local stage_plugin_dir="${stage_app}/app/plugins"
     local stage_resource_dir="${stage_app}/app/application/site"
-    local resource_source_dir
     local resource_file
-    local python_version
-    local arch
-    local arch_suffix
-    local sites_file
 
     [ -f "${stage_app}/version.py" ] || return 1
     [ -f "${stage_app}/pyproject.toml" ] || return 1
@@ -399,13 +394,17 @@ function stage_runtime_payload() {
         return 1
     fi
 
-    resource_source_dir="$(existing_resource_dir)"
     mkdir -p "${stage_resource_dir}" || return 1
-    for resource_file in sites.py user.sites.v2.json; do
+    # 本地实现依赖同一版本的宿主查询和认证接口，不能叠加到官方归档中。
+    for resource_file in sites.py user.sites.v3.json; do
         if [ ! -s "${stage_resource_dir}/${resource_file}" ]; then
-            cp -a "${resource_source_dir}/${resource_file}" "${stage_resource_dir}/" || return 1
+            ERROR "更新包缺少本分支的源码站点模块，请通过 Git 或本分支镜像更新"
+            return 1
         fi
     done
+    find "${stage_resource_dir}" -maxdepth 1 -type f \
+        \( -name "sites.*.so" -o -name "sites.*.pyd" -o -name "sites.*.dylib" -o -name "user.sites*.bin" \) \
+        -delete || return 1
     INFO "本地站点资源准备完成"
     return 0
 }

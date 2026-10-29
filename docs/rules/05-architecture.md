@@ -1330,7 +1330,7 @@ driven workflow registration.
 | `app/adapters/network/browser.py` | Browser launch facade and browser session implementation |
 | `app/adapters/system/display/` | On-first-use virtual display resource and legacy `DisplayHelper` facade |
 | `app/application/rss.py` | Configured RSS retrieval and parsing |
-| `app/application/site/sites.*` | Generated site catalog, authentication and index capability plus its colocated data bundle |
+| `app/application/site/sites.*` | Source-bundled site catalog, authentication compatibility and index capability with colocated V3 JSON; queries use SiteQueryService and authentication uses a startup-injected HTTP Port |
 | `app/runtime/cache.py` | Cache contracts, memory backend, decorators and proxies |
 | `app/adapters/cache/backends.py` | Redis and filesystem cache adapters |
 | `app/adapters/system/resource.py` | Runtime resource detection/download/installation |

@@ -287,7 +287,7 @@ CI 上传 `complexity-report` 工件，门禁失败时也保留已生成的指�
 `tests/fixtures/architecture/mypy-policy.json` 中每项兼容原因、所属方法、错误码和语法指纹。
 保留例外涉及异步工具旧接口、动态 Facade 描述符、运行时 MRO/元类、FastAPI Response
 注入默认值和供应方类型限制；
-例外只作用于登记语句，方法体继续严格检查。二进制站点接口的 `sites.pyi` 按文件摘要登记。
+例外只作用于登记语句，方法体继续严格检查。本分支的站点接口直接检查 `sites.py` 源码，不用二进制接口类型桩屏蔽实现。
 
 门禁拒绝新增或变化的 `type: ignore`、没有错误码的忽略、`no_type_check`、文件内 mypy
 配置和未经复核的本地类型桩；同时锁定完整 mypy 配置，防止缩小检查范围或扩大导入豁免。
@@ -332,3 +332,10 @@ uv run --locked --no-sync python scripts/architecture/mypy_policy.py --write
 `tests/test_agent_guardrail_controller.py` 保留 Hermes 原始循环规则的纯行为回归，
 `tests/test_agent_guardrails.py` 使用真实 LangGraph 验证并行顺序、逐运行隔离、正常轮询、
 未知结果、尾部行动继续提示和流式停止交付。派生代码许可在 `app/agent/guardrails/LICENSE.hermes`。
+
+### 本分支的 V3 站点资源
+
+本分支在 `app/application/site/` 使用 `sites.py` 和 `user.sites.v3.json`，不依赖 CPython 原生站点扩展。
+`moviepilot install resources` 校验本地文件并清理可能覆盖源码导入的旧二进制资源。
+容器构建与事务更新同样携带本地资源；GHCR 工作流跟随 `v3` 分支构建 amd64/arm64 镜像。
+测试通过独立模块名加载真实站点源码，并在查询及 HTTP 端口替换依赖，不执行实际站点认证。

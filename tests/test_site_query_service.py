@@ -4,9 +4,27 @@
 
 from unittest.mock import Mock
 
-from app.application.site.contract import SiteUserDataSnapshot
+from app.application.site.contract import SiteSnapshot, SiteUserDataSnapshot
 from app.application.site.query import SiteQueryService
-from app.schemas.site import SiteUserData
+from app.schemas.site import Site, SiteUserData
+
+
+def test_list_ordered_sync_projects_snapshots_without_changing_order() -> None:
+    """
+    同步兼容查询只投影仓储快照，保留仓储优先级顺序和可空流控参数。
+    """
+    repository = Mock()
+    repository.list_order_by_pri.return_value = [
+        SiteSnapshot(id=9, name="优先站点", url="https://first.test/", pri=0),
+        SiteSnapshot(id=2, name="后续站点", url="https://second.test/", pri=1),
+    ]
+
+    result = SiteQueryService(repository).list_ordered_sync()
+
+    assert all(isinstance(site, Site) for site in result)
+    assert [site.id for site in result] == [9, 2]
+    assert result[0].limit_interval is None
+    repository.list_order_by_pri.assert_called_once_with()
 
 
 def test_userdata_latest_sync_projects_snapshot_to_dto() -> None:

@@ -183,7 +183,7 @@ moviepilot update all --ref latest --frontend-version latest
 moviepilot update all --skip-resources
 ```
 
-`MOVIEPILOT_AUTO_UPDATE` is a boolean (default `false`): `true` enables the background Release check and version reminders, and `false` disables application checks and reminders. `AUTO_UPDATE_RESOURCE` independently enables resource checks and reminders; the scheduled service exists when either switch is enabled and checks only enabled targets. The scheduler hot-reloads this switch. `MOVIEPILOT_UPDATE_DEV` is an independent boolean (default `false`) that enables development-branch updates during `start/restart`. Legacy `dev`/`release` values of `MOVIEPILOT_AUTO_UPDATE` normalize to `true`; legacy `dev` also preserves Dev tracking when the new switch is not explicitly configured.
+`MOVIEPILOT_AUTO_UPDATE` is a boolean (default `false`): `true` enables the background Release check and version reminders, and `false` disables application checks and reminders. This fork bundles site resources with source and defaults `AUTO_UPDATE_RESOURCE` to `false`; the source bundle skips native-resource checks even when this legacy switch is enabled. Without a source bundle, `AUTO_UPDATE_RESOURCE` independently enables resource checks and reminders; the scheduled service exists when either switch is enabled and checks only enabled targets. The scheduler hot-reloads this switch. `MOVIEPILOT_UPDATE_DEV` is an independent boolean (default `false`) that enables development-branch updates during `start/restart`. Legacy `dev`/`release` values of `MOVIEPILOT_AUTO_UPDATE` normalize to `true`; legacy `dev` also preserves Dev tracking when the new switch is not explicitly configured.
 
 ---
 

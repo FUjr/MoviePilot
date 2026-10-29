@@ -356,7 +356,7 @@ NOTIFICATION_SWITCH_TYPES = [
 ]
 # 卸载第二次确认必须逐字输入此标记，普通回车不能确认删除。
 UNINSTALL_CONFIRM_TEXT = "UNINSTALL"
-RESOURCE_FILE_PATTERNS = ("sites*", "user.sites*.bin", "user.sites*.json")
+RESOURCE_FILE_PATTERNS = ("sites.*.so", "sites.*.pyd", "sites.*.dylib", "user.sites*.bin")
 AUTOSTART_ENV_KEY = "MOVIEPILOT_AUTO_START"
 AUTOSTART_RUNTIME_DIR = RUNTIME_DIR / "startup"
 AUTOSTART_UNIX_LAUNCHER = AUTOSTART_RUNTIME_DIR / "moviepilot-start.sh"
@@ -1204,7 +1204,7 @@ def local_resource_status() -> bool:
     """
     检查随源码分发的站点实现与明文配置是否完整。
     """
-    return all((SITE_RESOURCE_DIR / name).is_file() for name in ("sites.py", "user.sites.v2.json"))
+    return all((SITE_RESOURCE_DIR / name).is_file() for name in ("sites.py", "user.sites.v3.json"))
 
 
 def copy_resource_files(source_dir: Path) -> list[str]:
@@ -1467,7 +1467,9 @@ def install_resources(
     ensure_local_dirs()
     if not local_resource_status():
         raise RuntimeError("未找到本地站点资源文件")
-    copied = ["sites.py", "user.sites.v2.json"]
+    # Python 优先导入同名原生扩展，必须清除旧资源以启用源码实现。
+    _remove_installed_resource_files()
+    copied = ["sites.py", "user.sites.v3.json"]
     print_step(f"资源初始化完成，共处理 {len(copied)} 个文件（本地开源资源）")
     return copied
 
@@ -4247,7 +4249,7 @@ def uninstall_local(
     print(f"  - 删除前端运行时目录：{PUBLIC_DIR}")
     print(f"  - 删除本地 Node 运行时目录：{RUNTIME_DIR}")
     print(
-        f"  - 删除资源文件：{SITE_RESOURCE_DIR}/sites*、"
+        f"  - 删除旧二进制资源：{SITE_RESOURCE_DIR}/sites.*.so、sites.*.pyd、"
         f"{SITE_RESOURCE_DIR}/user.sites*.bin"
     )
     if linked_cli_paths:
@@ -4570,23 +4572,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     resources_parser = subparsers.add_parser(
-        "install-resources", help="下载资源文件并同步到 app/application/site"
+        "install-resources", help="校验 app/application/site 源码资源并清理旧二进制文件"
     )
     resources_parser.add_argument(
-        "--resources-repo", help="本地 MoviePilot-Resources 仓库路径"
+        "--resources-repo", help="兼容旧参数；本分支使用源码资源"
     )
-    resources_parser.add_argument("--resource-dir", help="直接指定 resources.v3 目录")
+    resources_parser.add_argument("--resource-dir", help="兼容旧参数；不安装二进制资源")
     resources_parser.add_argument(
         "--config-dir", help="配置目录，默认使用程序目录外的系统配置目录"
     )
 
     init_parser = subparsers.add_parser("init", help="初始化本地配置与资源文件")
     init_parser.add_argument(
-        "--resources-repo", help="本地 MoviePilot-Resources 仓库路径"
+        "--resources-repo", help="兼容旧参数；本分支使用源码资源"
     )
-    init_parser.add_argument("--resource-dir", help="直接指定 resources.v3 目录")
+    init_parser.add_argument("--resource-dir", help="兼容旧参数；不安装二进制资源")
     init_parser.add_argument(
-        "--skip-resources", action="store_true", help="只初始化配置，不同步资源文件"
+        "--skip-resources", action="store_true", help="跳过本地站点资源校验"
     )
     init_parser.add_argument(
         "--force-token", action="store_true", help="强制重置 API_TOKEN"
@@ -4619,11 +4621,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--node-version", default=DEFAULT_NODE_VERSION, help="本地 Node 运行时版本"
     )
     setup_parser.add_argument(
-        "--resources-repo", help="本地 MoviePilot-Resources 仓库路径"
+        "--resources-repo", help="兼容旧参数；本分支使用源码资源"
     )
-    setup_parser.add_argument("--resource-dir", help="直接指定 resources.v3 目录")
+    setup_parser.add_argument("--resource-dir", help="兼容旧参数；不安装二进制资源")
     setup_parser.add_argument(
-        "--skip-resources", action="store_true", help="只初始化配置，不同步资源文件"
+        "--skip-resources", action="store_true", help="跳过本地站点资源校验"
     )
     setup_parser.add_argument(
         "--force-token", action="store_true", help="强制重置 API_TOKEN"

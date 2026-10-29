@@ -3,6 +3,7 @@
 """
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -11,6 +12,7 @@ from app.application import rss as rss_module
 from app.application.rss import RssHelper, configure_rss_ports
 from app.application.security import cookie as cookie_module
 from app.application.security.cookie import CookieHelper, configure_cookie_ports
+from app.application.site.auth import get_site_auth_http
 from app.application.torrent.download import (
     TorrentHelper,
     configure_torrent_port,
@@ -332,6 +334,51 @@ def test_reset_ports_make_real_access_fail_explicitly(monkeypatch) -> None:
         )
     with pytest.raises(RuntimeError, match="种子下载端口"):
         TorrentHelper().download_torrent("https://example.test/download/2")
+    with pytest.raises(RuntimeError, match="站点认证传输"):
+        get_site_auth_http()
+
+
+@pytest.mark.parametrize(
+    ("status", "payload", "raises"),
+    [
+        (None, None, False),
+        (200, {"status": "success"}, False),
+        (403, None, False),
+        (200, [], True),
+        (200, ValueError("invalid JSON"), True),
+    ],
+)
+def test_site_auth_http_releases_responses(monkeypatch, status, payload, raises) -> None:
+    """
+    认证传输保留失败状态，拒绝无效 JSON，并在成功及异常路径释放连接。
+    """
+    response = MagicMock(status_code=status) if status is not None else None
+    if response is not None:
+        response.__bool__.return_value = status < 400
+        if isinstance(payload, ValueError):
+            response.json.side_effect = payload
+        else:
+            response.json.return_value = payload
+    request_factory = Mock()
+    request_factory.return_value.get_res.return_value = response
+    monkeypatch.setattr(site_composition, "RequestUtils", request_factory)
+    site_initializer.init_site_access_ports()
+    headers = {"Authorization": "test-token"}
+    arguments = {"url": "https://example.test/auth", "headers": headers, "timeout": 15}
+
+    if raises:
+        with pytest.raises(ValueError):
+            get_site_auth_http().get_json(**arguments)
+    else:
+        expected = payload if status == 200 else {}
+        assert get_site_auth_http().get_json(**arguments) == (status, expected)
+
+    request_factory.assert_called_once_with(headers=headers, timeout=15)
+    request_factory.return_value.get_res.assert_called_once_with(arguments["url"])
+    if response is not None:
+        response.close.assert_called_once_with()
+        if status != 200:
+            response.json.assert_not_called()
 
 
 def test_initializer_rolls_back_partial_ports_on_failure(monkeypatch) -> None:
@@ -354,6 +401,8 @@ def test_initializer_rolls_back_partial_ports_on_failure(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="RSS 访问端口"):
         rss_module._require_rss_ports()
+    with pytest.raises(RuntimeError, match="站点认证传输"):
+        get_site_auth_http()
 
 
 def test_initializer_configures_and_reset_releases_all_ports() -> None:
@@ -366,6 +415,7 @@ def test_initializer_configures_and_reset_releases_all_ports() -> None:
     assert cookie_module._require_cookie_ports()
     assert torrent_module._require_torrent_port()
     assert site_module._site_ports_snapshot()
+    assert get_site_auth_http()
 
     site_initializer.reset_site_access_ports()
 
@@ -377,3 +427,5 @@ def test_initializer_configures_and_reset_releases_all_ports() -> None:
         torrent_module._require_torrent_port()
     with pytest.raises(RuntimeError):
         site_module._site_ports_snapshot()
+    with pytest.raises(RuntimeError):
+        get_site_auth_http()

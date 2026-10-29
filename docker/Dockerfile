@@ -290,7 +290,7 @@ RUN set -eu; \
 FROM prepare_payload AS prepare_resources
 
 ARG TARGETARCH
-COPY app/application/site/sites.py app/application/site/user.sites.v2.json /resources/
+COPY app/application/site/sites.py app/application/site/user.sites.v3.json /resources/
 
 # 准备容器控制面
 FROM prepare_payload AS prepare_control

@@ -259,22 +259,46 @@ def test_copy_resource_files_rolls_back_when_commit_fails(monkeypatch, tmp_path)
     assert not (target_dir / new_native_name).exists()
 
 
-def test_local_resource_status_requires_current_native_artifact(
-    monkeypatch, tmp_path
-):
+def test_local_resource_status_requires_source_bundle(monkeypatch, tmp_path):
     """
-    本地资源就绪判定要求当前解释器对应的原生扩展存在。
+    源码包就绪判定与 Python ABI 无关，缺少任一源码资源均不能跳过安装。
     """
     module = load_local_setup_module()
     monkeypatch.setattr(module, "SITE_RESOURCE_DIR", tmp_path)
-    monkeypatch.setattr(module, "_get_platform_tag", lambda: ("darwin", "arm64"))
-    monkeypatch.setattr(module, "_get_python_version_tag", lambda: "cp314t")
     (tmp_path / "user.sites.v3.bin").write_bytes(b"data")
-    (tmp_path / "sites.pyi").write_text("typing", encoding="utf-8")
-    (tmp_path / "sites.cpython-314-darwin.so").write_bytes(b"standard")
-
+    (tmp_path / "sites.cpython-314t-darwin.so").write_bytes(b"native")
     assert module.local_resource_status() is False
-
-    (tmp_path / "sites.cpython-314t-darwin.so").write_bytes(b"free-threaded")
-
+    (tmp_path / "sites.py").write_text("# 源码实现\n", encoding="utf-8")
+    assert module.local_resource_status() is False
+    (tmp_path / "user.sites.v3.json").write_text("{}", encoding="utf-8")
     assert module.local_resource_status() is True
+
+
+def test_install_resources_preserves_source_and_removes_native_shadowing(monkeypatch, tmp_path):
+    """
+    初始化保持源码原样，清除所有 ABI 的旧资源并禁止下载。
+    """
+    module = load_local_setup_module()
+    monkeypatch.setattr(module, "SITE_RESOURCE_DIR", tmp_path)
+    monkeypatch.setattr(module, "ensure_local_dirs", lambda: None)
+    (tmp_path / "sites.py").write_text("# 本地实现\n", encoding="utf-8")
+    (tmp_path / "sites.pyi").write_text("# 类型声明\n", encoding="utf-8")
+    (tmp_path / "user.sites.v3.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "sites.cpython-314t-darwin.so").write_bytes(b"native")
+    (tmp_path / "user.sites.v3.bin").write_bytes(b"data")
+    assert module.install_resources(None, None) == ["sites.py", "user.sites.v3.json"]
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["sites.py", "sites.pyi", "user.sites.v3.json"]
+
+
+def test_install_incomplete_source_keeps_existing_resource(monkeypatch, tmp_path):
+    """
+    源码不完整时先报错，不能删除仍在使用的旧资源。
+    """
+    module = load_local_setup_module()
+    monkeypatch.setattr(module, "SITE_RESOURCE_DIR", tmp_path)
+    monkeypatch.setattr(module, "ensure_local_dirs", lambda: None)
+    old = tmp_path / "sites.cpython-314t-darwin.so"
+    old.write_bytes(b"native")
+    with pytest.raises(RuntimeError, match="本地站点资源"):
+        module.install_resources(None, None)
+    assert old.read_bytes() == b"native"

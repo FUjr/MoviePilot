@@ -17,12 +17,14 @@ from app.adapters.system import resource as resource_module
 
 
 @pytest.fixture
-def resource_settings(monkeypatch):
+def resource_settings(monkeypatch, tmp_path):
     """
     隔离部署配置及退避等待，禁止用例访问实际代理或运行目录。
     """
     values = {"GITHUB_PROXY": "", "PROXY": None, "GITHUB_HEADERS": {}, "AUTO_UPDATE_RESOURCE": True}
     monkeypatch.setattr(resource_module, "get_runtime_setting", values.get)
+    # 这些用例验证无源码包时保留的旧资源下载契约。
+    monkeypatch.setattr(resource_module.ResourceHelper, "_base_dir", tmp_path)
     monkeypatch.setattr(resource_module.SystemUtils, "is_frozen", lambda: False)
     monkeypatch.setattr(time, "sleep", Mock())
     return values

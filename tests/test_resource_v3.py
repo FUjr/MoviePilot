@@ -6,10 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from app.adapters.system.resource import (
-    ResourceHelper,
-    configure_resource_version_provider,
-)
+from app.adapters.system import resource as resource_module
+from app.adapters.system.resource import ResourceHelper
 from app.runtime.config import settings
 from app.startup.composition import resource as resource_composition
 from app.startup.initializers import modules as modules_initializer
@@ -58,7 +56,7 @@ def test_resource_helper_selects_runtime_abi(
     assert ResourceHelper._get_needed_files()[-1] == expected
 
 
-def test_resource_helper_preserves_no_argument_check_contract(monkeypatch):
+def test_resource_helper_preserves_no_argument_check_contract(monkeypatch, tmp_path):
     """
     旧插件无参数调用 check 时应使用启动层注入版本，不反向导入站点应用。
     """
@@ -71,9 +69,10 @@ def test_resource_helper_preserves_no_argument_check_contract(monkeypatch):
         provider_calls.append(True)
         return "2.4.10", "3.0.2"
 
-    configure_resource_version_provider(provide_versions)
+    monkeypatch.setattr(resource_module, "_resource_version_provider", provide_versions)
     monkeypatch.setattr(ResourceHelper, "_load_resource_info", lambda _self: None)
-    monkeypatch.setattr("app.adapters.system.resource.settings.AUTO_UPDATE_RESOURCE", True)
+    monkeypatch.setattr(ResourceHelper, "_base_dir", tmp_path)
+    monkeypatch.setattr("app.adapters.system.resource.get_runtime_setting", lambda _key: True)
     monkeypatch.setattr(
         "app.adapters.system.resource.SystemUtils.is_frozen",
         lambda: False,
@@ -81,6 +80,26 @@ def test_resource_helper_preserves_no_argument_check_contract(monkeypatch):
 
     assert ResourceHelper().check() is False
     assert provider_calls == [True]
+
+
+def test_source_bundle_skips_binary_update_without_network(monkeypatch, tmp_path):
+    """
+    源码模式即使开启旧资源开关也不能请求官方清单或安装原生扩展。
+    """
+    source_dir = tmp_path / ResourceHelper._resource_target
+    source_dir.mkdir(parents=True)
+    (source_dir / "sites.py").write_text("# 源码实现\n", encoding="utf-8")
+    monkeypatch.setattr(ResourceHelper, "_base_dir", tmp_path)
+
+    def fail_network(_self):
+        """
+        任何清单请求都说明源码资源隔离失效。
+        """
+        pytest.fail("源码模式不得访问资源仓库")
+
+    monkeypatch.setattr(ResourceHelper, "_load_resource_info", fail_network)
+    assert ResourceHelper().get_update_info() is None
+    assert ResourceHelper().check() is False
 
 
 def test_startup_resource_hook_only_configures_version_provider(monkeypatch):
@@ -121,7 +140,7 @@ def test_install_and_docker_paths_do_not_reference_v2_resources():
         content = path.read_text(encoding="utf-8")
         assert "resources.v2" not in content
         assert "user.sites.v2.bin" not in content
-        assert "resources.v3" in content
+        assert "user.sites.v3.json" in content
         assert "app/application/site" in content
 
 

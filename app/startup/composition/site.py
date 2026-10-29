@@ -28,6 +28,10 @@ from app.application.security.cookie import (
     configure_cookie_ports,
     reset_cookie_ports,
 )
+from app.application.site.auth import (
+    configure_site_auth_http,
+    reset_site_auth_http,
+)
 from app.application.torrent.download import (
     TorrentHttpPort,
     TorrentResponsePort,
@@ -45,6 +49,7 @@ from app.chain.site import (
 )
 from app.foundation.url import UrlUtils, url_origin_for_log
 from app.runtime.log import logger
+from app.schemas.common import JsonData
 
 
 def _redirect_destination(url: str, response: Any) -> tuple[Optional[str], Optional[str]]:
@@ -66,6 +71,31 @@ def _redirect_destination(url: str, response: Any) -> tuple[Optional[str], Optio
     if target.scheme not in ("http", "https") or not target.hostname or target.username or target.password:
         return None, "站点请求重定向目标无效"
     return destination, None
+
+
+class _SiteAuthHttpAdapter:
+    """
+    用 RequestUtils 读取站点认证 JSON，并释放响应连接。
+    """
+
+    def get_json(
+        self, *, url: str, headers: dict[str, str], timeout: int,
+    ) -> tuple[Optional[int], dict[str, JsonData]]:
+        """
+        成功响应须为 JSON 对象；失败状态不解析可能包含 HTML 的响应体。
+        """
+        response = RequestUtils(headers=headers, timeout=timeout).get_res(url)
+        if response is None:
+            return None, {}
+        try:
+            if response.status_code != 200:
+                return response.status_code, {}
+            data = response.json()
+            if not isinstance(data, dict):
+                raise ValueError("站点认证响应不是 JSON 对象")
+            return response.status_code, data
+        finally:
+            response.close()
 
 
 class _RssHttpAdapter:
@@ -349,6 +379,7 @@ def configure_site_access_composition() -> None:
     """
     reset_site_access_composition()
     try:
+        configure_site_auth_http(_SiteAuthHttpAdapter())
         configure_rss_ports(
             http=cast(RssHttpPort, _RssHttpAdapter()),
             browser=cast(RssBrowserPort, _RssBrowserAdapter()),
@@ -375,6 +406,7 @@ def reset_site_access_composition() -> None:
     """
     统一释放站点访问端口，支持重复 lifespan 与失败回滚。
     """
+    reset_site_auth_http()
     reset_site_ports()
     reset_torrent_port()
     reset_cookie_ports()

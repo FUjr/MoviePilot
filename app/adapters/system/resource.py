@@ -127,9 +127,27 @@ class ResourceHelper:
     @classmethod
     def _get_needed_files(cls) -> list[str]:
         """
-        本地站点实现随源码分发，不下载二进制资源。
+        返回 V3 资源在当前平台需要下载的文件名。
         """
-        return []
+        python_version = cls._get_python_version_tag()
+        python_ver = python_version.replace("cp", "")
+        system = platform.system().lower()
+        machine = cls._get_machine_tag()
+        files = [f"user.sites.{cls._version_flag}.bin"]
+        if system == "linux":
+            files.append(f"sites.cpython-{python_ver}-{machine}-linux-gnu.so")
+        elif system == "darwin":
+            files.append(f"sites.cpython-{python_ver}-darwin.so")
+        elif system == "windows":
+            files.append(f"sites.cp{python_ver}-win_amd64.pyd")
+        return files
+
+    @classmethod
+    def _uses_source_bundle(cls) -> bool:
+        """
+        检查当前运行目录是否采用源码附带的站点实现。
+        """
+        return (cls._base_dir / cls._resource_target / "sites.py").is_file()
 
     def _load_resource_info(self) -> Optional[Response]:
         """
@@ -208,6 +226,8 @@ class ResourceHelper:
         :param indexer_version: 当前索引资源版本；省略时使用组合根注入值
         :return: 有更新时返回资源版本和文件元数据，否则返回 None
         """
+        if self._uses_source_bundle():
+            return None
         if not get_runtime_setting("AUTO_UPDATE_RESOURCE") or SystemUtils.is_frozen():
             return None
         if auth_version is None or indexer_version is None:

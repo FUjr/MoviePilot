@@ -28,6 +28,7 @@ from app.runtime.log import logger
 from app.runtime.stop import runtime_stop_state
 from app.schemas.media import resolve_media_identity
 from app.schemas.message import Message
+from app.schemas.site import Site
 from app.schemas.types import MediaType, MessageType, NotificationChannel, SystemConfigKey
 
 
@@ -359,9 +360,11 @@ class TorrentsChain(ChainBase):
         if rss_url is None:
             logger.warning(f'站点 {domain} RSS地址无效，跳过获取')
             return []
-        rss_items = RssHelper().parse(rss_url, True if site.get("proxy") else False,
-                                      timeout=int(site.get("timeout") or 30),
-                                      ua=site.get("ua") if site.get("ua") else None)
+        # 资源扩展字段留在原映射，凭据和运行参数通过站点 DTO 取得明确类型。
+        site_info = Site.model_validate(site)
+        rss_items = RssHelper().parse(rss_url, bool(site_info.proxy),
+                                      timeout=site_info.timeout or 30,
+                                      ua=site_info.ua or None)
         if rss_items is None:
             # rss过期，尝试保留原配置生成新的rss
             self.__renew_rss_url(domain=domain, site=site)
@@ -384,13 +387,13 @@ class TorrentsChain(ChainBase):
                 if not item.get("title"):
                     continue
                 torrentinfo = TorrentInfo(
-                    site=site.get("id"),
-                    site_name=site.get("name"),
-                    site_cookie=site.get("cookie"),
-                    site_ua=site.get("ua") or self.runtime_config.user_agent,
-                    site_proxy=bool(site.get("proxy")),
-                    site_order=int(site.get("pri") or 0),
-                    site_downloader=site.get("downloader"),
+                    site=site_info.id,
+                    site_name=site_info.name,
+                    site_cookie=site_info.cookie,
+                    site_ua=site_info.ua or self.runtime_config.user_agent,
+                    site_proxy=bool(site_info.proxy),
+                    site_order=site_info.pri or 0,
+                    site_downloader=site_info.downloader,
                     title=item.get("title"),
                     enclosure=item.get("enclosure"),
                     page_url=item.get("link"),
