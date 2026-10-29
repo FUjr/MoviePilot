@@ -434,7 +434,7 @@ def test_publish_refreshes_base_and_preserves_build_cache() -> None:
 
 def test_release_gate_only_publishes_changed_versions(tmp_path: Path) -> None:
     """
-    自动发布只接受版本值变化，手动重建保留入口。
+    自动发布只接受已有分支的版本值变化，首次建分支不发布，手动重建保留入口。
     """
     workflow = _load_workflow()
     gate = workflow["jobs"]["release-gate"]
@@ -462,12 +462,15 @@ def test_release_gate_only_publishes_changed_versions(tmp_path: Path) -> None:
     command = next(step for step in gate["steps"] if step.get("id") == "detect")["run"]
     output_file = tmp_path / "output"
 
-    def detect(event_name: str, content: str) -> str:
+    def detect(event_name: str, content: str, *, previous_sha: str = before_sha) -> str:
+        """
+        在临时 Git 仓库执行真实发布检查，模拟普通推送及新分支事件。
+        """
         version_file.write_text(content, encoding="utf-8")
         output_file.write_text("", encoding="utf-8")
         subprocess.run(
             ["bash", "-e", "-c", command], cwd=repo, check=True,
-            env={**os.environ, "EVENT_NAME": event_name, "BEFORE_SHA": before_sha,
+            env={**os.environ, "EVENT_NAME": event_name, "BEFORE_SHA": previous_sha,
                  "GITHUB_OUTPUT": str(output_file)},
         )
         return output_file.read_text(encoding="utf-8").strip()
@@ -476,6 +479,9 @@ def test_release_gate_only_publishes_changed_versions(tmp_path: Path) -> None:
     assert detect("push", "APP_VERSION = 'v3.1.7'\nFRONTEND_VERSION = 'v3.1.6'\n") == "publish=true"
     assert detect("push", "APP_VERSION = 'v3.1.6'\nFRONTEND_VERSION = 'v3.1.7'\n") == "publish=true"
     assert detect("workflow_dispatch", "APP_VERSION = 'v3.1.6'\nFRONTEND_VERSION = 'v3.1.6'\n") == "publish=true"
+    initial_version = "APP_VERSION = 'v3.1.7'\nFRONTEND_VERSION = 'v3.1.7'\n"
+    assert detect("push", initial_version, previous_sha="0" * 40) == "publish=false"
+    assert detect("workflow_dispatch", initial_version, previous_sha="0" * 40) == "publish=true"
 
 
 def test_release_publishes_free_threaded_image_with_separate_metadata_and_cache() -> None:
